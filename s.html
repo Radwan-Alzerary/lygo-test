@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title></title>
+    <meta name="viewport" content="initial-scale=1.0, user-scalable=no">
+    <meta charset="utf-8">
+    <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.10/lodash.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7"></script>
+    <style>
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+
+        #container {
+            display: flex;
+            flex: 1;
+            position: relative;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        #top-menu {
+            background-color: #f1f1f1;
+            display: flex;
+            flex-direction: row;
+            height: 100px;
+            width: 100%;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
+
+        #grid {
+            display: flex;
+            flex-direction: row;
+            gap: 10px;
+            height: fit-content;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="container">
+        <div id="top-menu">
+
+            <div id="google-poi">
+                Google Business Profile
+                <input type="text" id="search">
+            </div>
+            <div id="grid"></div>
+
+        </div>
+        <div id="map"></div>
+    </div>
+
+    <script>
+
+        const gridDiv = document.getElementById('grid');
+        const googleSearch = document.getElementById('search');
+
+        const mapStyle = [{ "featureType": "water", "elementType": "geometry", "stylers": [{ "color": "#e9e9e9" }, { "lightness": 17 }] }, { "featureType": "landscape", "elementType": "geometry", "stylers": [{ "color": "#f5f5f5" }, { "lightness": 20 }] }, { "featureType": "road.highway", "elementType": "geometry.fill", "stylers": [{ "color": "#ffffff" }, { "lightness": 17 }] }, { "featureType": "road.highway", "elementType": "geometry.stroke", "stylers": [{ "color": "#ffffff" }, { "lightness": 29 }, { "weight": 0.2 }] }, { "featureType": "road.arterial", "elementType": "geometry", "stylers": [{ "color": "#ffffff" }, { "lightness": 18 }] }, { "featureType": "road.local", "elementType": "geometry", "stylers": [{ "color": "#ffffff" }, { "lightness": 16 }] }, { "featureType": "poi", "elementType": "geometry", "stylers": [{ "color": "#f5f5f5" }, { "lightness": 21 }] }, { "featureType": "poi.park", "elementType": "geometry", "stylers": [{ "color": "#dedede" }, { "lightness": 21 }] }, { "elementType": "labels.text.stroke", "stylers": [{ "visibility": "on" }, { "color": "#ffffff" }, { "lightness": 16 }] }, { "elementType": "labels.text.fill", "stylers": [{ "saturation": 36 }, { "color": "#333333" }, { "lightness": 40 }] }, { "elementType": "labels.icon", "stylers": [{ "visibility": "off" }] }, { "featureType": "transit", "elementType": "geometry", "stylers": [{ "color": "#f2f2f2" }, { "lightness": 19 }] }, { "featureType": "administrative", "elementType": "geometry.fill", "stylers": [{ "color": "#fefefe" }, { "lightness": 20 }] }, { "featureType": "administrative", "elementType": "geometry.stroke", "stylers": [{ "color": "#fefefe" }, { "lightness": 17 }, { "weight": 1.2 }] }]
+
+        const appData = new Proxy({
+            gridCenter: { lat: 32.0330112964211, lng: 34.82596537402672 },
+            gridSize: 5,
+            gridGap: 10,
+            gridUnits: 'km',
+            allMarkers: []
+        }, {
+            set(target, property, value) {
+                target[property] = value;
+                if (property !== 'allMarkers') {
+                    drawGrid(target);
+                }
+                return true;
+            }
+        });
+
+
+        function initMap() {
+            map = new google.maps.Map(document.getElementById('map'), {
+                center: { lat: 32.0330112964211, lng: 34.82596537402672 },
+                zoom: 10,
+                streetViewControl: false,
+                zoomControl: true,
+                mapTypeControl: false,
+                rotateControl: false,
+                fullscreenControl: false,
+                styles: mapStyle
+            });
+
+            //google POI search 
+            // Initialize the autocomplete
+            let autocomplete;
+
+            function initAutocomplete() {
+                autocomplete = new google.maps.places.Autocomplete(googleSearch, {
+                    types: ['geocode'],
+                });
+                autocomplete.addListener('place_changed', onPlaceChanged);
+            }
+            function onPlaceChanged() {
+                var place = autocomplete.getPlace();
+                if (!place.geometry) {
+                    // User entered the name of a Place that was not suggested and
+                    // pressed the Enter key, or the Place Details request failed.
+                    googleSearch.placeholder = 'Enter a place';
+                } else {
+                    const { lat, lng } = place.geometry.location.toJSON();
+                    appData.gridCenter = { lat, lng };
+                    map.setCenter({ lat, lng });
+                }
+            }
+            google.maps.event.addDomListener(window, 'load', initAutocomplete);
+
+
+            const gridDropDown = createDropDown({
+                name: 'gridDropDown',
+                container: document.getElementById('top-menu'),
+                values: [5, 7, 9, 15, 21],
+                onChange: (e) => {
+                    appData.gridSize = parseInt(e.target.value);
+                }
+            });
+
+            const gridGapDropDown = createDropDown({
+                name: 'gridGapDropDown',
+                container: document.getElementById('top-menu'),
+                values: [0.1, 0.2, 0.3, 0.4, 0.5, 1, 2, 3, 4, 5],
+                onChange: (e) => {
+                    appData.gridGap = parseFloat(e.target.value);
+                }
+            });
+
+            const gridGapUnitDropDown = createDropDown({
+                name: 'gridSize',
+                container: document.getElementById('top-menu'),
+                values: ["km", "mi"],
+                onChange: (e) => {
+                    appData.gridUnits = e.target.value;
+                }
+            });
+
+            gridDiv.appendChild(gridDropDown);
+            gridDiv.appendChild(gridGapDropDown);
+            gridDiv.appendChild(gridGapUnitDropDown);
+
+            appData.gridCenter = { lat: 32.0330112964211, lng: 34.82596537402672 };
+
+        }
+
+        function drawGrid() {
+
+            appData.allMarkers.forEach((marker) => {
+                marker.setMap(null);
+            });
+
+            const result = calculateMarkerCoordinates({
+                centerCoord: appData.gridCenter,
+                rows: appData.gridSize,
+                cols: appData.gridSize,
+                distanceMeters: appData.gridGap,
+                gridUnits: appData.gridUnits
+            }).forEach((item) => {
+                const [lng, lat] = item.coordinates;
+                const marker = createInteractiveMarker(map, { lat, lng }, item.active);
+                appData.allMarkers.push(marker);
+            });
+        }
+
+        function createInteractiveMarker(map, position, isActive) {
+
+            const marker = new google.maps.Marker({
+                position: position,
+                map: map,
+                icon: createCircleMarkerIcon(isActive),
+                isActive: isActive,
+                opacity: isActive ? 1 : 0.3
+            });
+            marker.addListener('click', function () {
+                const currentActiveState = this.get('isActive');
+                const newActiveState = !currentActiveState;
+                console.log('newActiveState', newActiveState);
+                this.set('isActive', newActiveState);
+                this.setIcon(createCircleMarkerIcon(newActiveState));
+                this.setOpacity(newActiveState ? 1 : 0.3);
+            });
+            return marker;
+        }
+
+        function createCircleMarkerIcon(isActive) {
+            if (isActive) {
+                return "icons/circle-plus-svgrepo-com.png";
+            }
+            return "icons/circle-quarters-svgrepo-com.png"
+        }
+
+        function calculateMarkerCoordinates({ centerCoord, cols, rows, distanceMeters, gridUnits }) {
+
+            appData.allMarkers = [];
+
+            const coordinates = [];
+            const totalMarkers = 50;
+            const halfTotal = Math.floor(totalMarkers / 2);
+            const halfCols = Math.floor(cols / 2);
+            const halfRows = Math.floor(rows / 2);
+
+            const unit = gridUnits === 'km' ? 1 : 1.60934;
+            const markerDistance = (distanceMeters / (cols - 1)) * unit;
+            const lineDistance = (distanceMeters / (rows - 1)) * unit;
+
+            const centerPoint = turf.point([centerCoord.lng, centerCoord.lat]);
+
+            for (let line = 0; line < totalMarkers; line++) {
+                const lineOffset = (line - halfTotal) * (lineDistance / (rows - 1));
+                const lineBearing = lineOffset >= 0 ? 0 : 180;
+                const lineStart = turf.destination(centerPoint, Math.abs(lineOffset), lineBearing);
+
+                for (let marker = 0; marker < totalMarkers; marker++) {
+                    const markerOffset = (marker - halfTotal) * (markerDistance / (cols - 1));
+                    const markerBearing = markerOffset >= 0 ? 90 : 270;
+                    const markerPoint = turf.destination(lineStart, Math.abs(markerOffset), markerBearing);
+                    const [lng, lat] = markerPoint.geometry.coordinates;
+
+                    const isActiveVertically = line >= (halfTotal - halfRows) && line < (halfTotal + halfRows + (rows % 2));
+                    const isActiveHorizontally = marker >= (halfTotal - halfCols) && marker < (halfTotal + halfCols + (cols % 2));
+
+                    coordinates.push({
+                        coordinates: [lng, lat],
+                        active: isActiveVertically && isActiveHorizontally
+                    });
+                }
+            }
+
+            return coordinates;
+        }
+
+        function createDropDown({ name, container, values, onChange }) {
+            const select = document.createElement('select');
+            select.name = name;
+            select.id = name;
+            select.onchange = onChange;
+
+            values.forEach((value) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.text = value;
+                select.appendChild(option);
+            });
+
+            return select;
+        }
+
+    </script>
+    <script
+        src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBeVERtl6-MScPy5xT3ysrJsM4zRkcjGaY&libraries=places&callback=initMap"
+        async defer></script>
+
+</body>
+
+</html>

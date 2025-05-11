@@ -13,6 +13,26 @@ const createToken = (id) => {
     expiresIn: maxAge,
   });
 };
+module.exports.deleteAccount = async (req, res, next) => {
+  try {
+    // 1. get the user ID from your authenticateToken middleware
+    const userId = req.user.id;
+
+    // 2. delete the user document
+    const user = await User.findByIdAndDelete(userId);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // 3. (optional) clear any auth cookies
+    res.clearCookie("jwt", { path: "/" });
+
+    // 4. send confirmation
+    return res.json({ message: "Your account and all data have been deleted." });
+  } catch (err) {
+    next(err);
+  }
+};
 
 module.exports.registerPhoneNumber = async (req, res, next) => {
   try {

@@ -11,6 +11,7 @@ web-build/
 # Native
 *.orig.*
 *.jks
+*.log
 *.p8
 *.p12
 *.key
@@ -33,3 +34,6 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+app-combined.log
+app-error.log
+app.log

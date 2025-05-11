@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Delete Your LyGo Ride Account</title>
+  <style>
+    body { font-family: sans-serif; max-width: 400px; margin: 2em auto; }
+    input, button { width: 100%; padding: .75em; margin-top: .5em; }
+  </style>
+</head>
+<body>
+  <h1>Delete Your Account</h1>
+  <% if (typeof error !== 'undefined') { %>
+    <p style="color:red"><%= error %></p>
+  <% } %>
+  <p>Enter the phone number associated with your LyGo Ride account. We’ll send you a one-time code to confirm.</p>
+  <form method="POST" action="/delete-account">
+    <input
+      type="tel"
+      name="phoneNumber"
+      placeholder="+9647XXXXXXXX"
+      required
+    />
+    <button type="submit">Send me the code</button>
+  </form>
+</body>
+</html>

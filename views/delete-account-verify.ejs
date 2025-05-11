@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Confirm Deletion</title>
+  <style>
+    body { font-family: sans-serif; max-width: 400px; margin: 2em auto; }
+    input, button { width: 100%; padding: .75em; margin-top: .5em; }
+  </style>
+</head>
+<body>
+  <h1>Confirm Account Deletion</h1>
+  <% if (typeof error !== 'undefined') { %>
+    <p style="color:red"><%= error %></p>
+  <% } %>
+  <p>An OTP was sent to <strong><%= phone %></strong>. Enter it below to permanently delete your account.</p>
+  <form method="POST" action="/delete-account/verify">
+    <input type="hidden" name="phoneNumber" value="<%= phone %>" />
+    <input
+      type="text"
+      name="otp"
+      placeholder="One-time code"
+      required
+    />
+    <button type="submit">Delete my account</button>
+  </form>
+</body>
+</html>

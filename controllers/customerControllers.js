@@ -34,6 +34,79 @@ module.exports.deleteAccount = async (req, res, next) => {
   }
 };
 
+
+module.exports.requestAccountDeletion = async (req, res, next) => {
+  try {
+    const { phoneNumber } = req.body;
+    if (!phoneNumber) {
+      return res.status(400).send("Phone number is required");
+    }
+    const customer = await Customer.findOne({ phoneNumber });
+    if (!customer) {
+      // for privacy, you could still say “OTP sent” even if no user exists
+      return res.render("delete-account-phone", {
+        error: "No account with that phone number was found."
+      });
+    }
+
+    // send OTP for deletion
+    const otpRes = await axios.post(`${OTP_SERVER_URL}/otp/send`, {
+      phone: phoneNumber,
+      project: PROJECT_NAME,
+    });
+
+    if (otpRes.data && otpRes.data.success) {
+      // redirect user to the “enter OTP” page
+      return res.redirect(`/delete-account/verify?phone=${encodeURIComponent(phoneNumber)}`);
+    } else {
+      throw new Error("Failed to send OTP");
+    }
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /delete-account/verify
+ *   { phoneNumber, otp }
+ * → verifies OTP, deletes Customer, FinancialAccount, and User docs, then shows success
+ */
+module.exports.verifyDeletionOtp = async (req, res, next) => {
+  try {
+    const { phoneNumber, otp } = req.body;
+    if (!phoneNumber || !otp) {
+      return res.status(400).send("Phone number and OTP are required");
+    }
+
+    // verify OTP
+    const verifyRes = await axios.post(`${OTP_SERVER_URL}/otp/verify`, {
+      phone: phoneNumber,
+      project: PROJECT_NAME,
+      otp: otp.toString(),
+    });
+
+    if (verifyRes.data && verifyRes.data.accepted) {
+      // delete customer
+      const customer = await Customer.findOneAndDelete({ phoneNumber });
+      if (customer) {
+        // delete any linked financial account
+        await FinancialAccount.deleteOne({ _id: customer.financialAccount });
+        // delete any User docs referencing this customer
+        await User.deleteMany({ customer: customer._id });
+      }
+      return res.render("delete-success");
+    } else {
+      return res.render("delete-account-verify", {
+        phone: phoneNumber,
+        error: "Invalid or expired OTP"
+      });
+    }
+  } catch (err) {
+    next(err);
+  }
+};
+
+
 module.exports.registerPhoneNumber = async (req, res, next) => {
   try {
     const { phoneNumber } = req.body;

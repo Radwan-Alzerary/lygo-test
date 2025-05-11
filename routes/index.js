@@ -11,8 +11,14 @@ router.use("/driver", require("./driver"));
 router.use("/system",authenticateToken, require("./systemSetting"));
 router.use("/ride",authenticateToken, require("./ride"));
 router.use("/places",authenticateToken, require("./places"));
-router.get("/delete-account", authenticateToken, (req, res) => {
-  res.render("delete-account");
+router.get("/delete-account", (req, res) => {
+  res.render("delete-account-phone");
 });
+router.post("/delete-account", require("../controllers/customerControllers").requestAccountDeletion);
+router.get("/delete-account/verify", (req, res) => {
+  const { phone } = req.query;
+  res.render("delete-account-verify", { phone });
+});
+router.post("/delete-account/verify", require("../controllers/customerControllers").verifyDeletionOtp);
 
 module.exports = router;

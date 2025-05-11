@@ -7413,3 +7413,36 @@
 {"address":"127.0.0.1","code":"ECONNREFUSED","errno":-4078,"level":"error","message":"[Redis] Redis Client Error: connect ECONNREFUSED 127.0.0.1:6379","port":6379,"service":"ride-hailing-app","stack":"Error: connect ECONNREFUSED 127.0.0.1:6379\n    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1634:16)","syscall":"connect","timestamp":"2025-05-11 16:49:26"}
 {"level":"warn","message":"[Redis] Client reconnecting...","service":"ride-hailing-app","timestamp":"2025-05-11 16:49:26"}
 {"address":"127.0.0.1","code":"ECONNREFUSED","errno":-4078,"level":"error","message":"[Redis] Redis Client Error: connect ECONNREFUSED 127.0.0.1:6379","port":6379,"service":"ride-hailing-app","stack":"Error: connect ECONNREFUSED 127.0.0.1:6379\n    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1634:16)","syscall":"connect","timestamp":"2025-05-11 16:49:26"}
+{"level":"info","message":"[System] Logger initialized.","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] Express app and HTTP server created.","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] Socket.IO server initialized.","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[State] Initialized in-memory state maps.","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] CORS middleware configured.","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] Compression middleware enabled.","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] Morgan HTTP logging middleware enabled (dev format).","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] Serving static files from F:\\lygo server old\\public","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] Express JSON body parser middleware enabled.","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] Express URL-encoded body parser middleware enabled.","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] Cookie parser middleware enabled.","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] Connect-flash middleware enabled.","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] View engine set to 'ejs' with views directory F:\\lygo server old\\views","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] Loaded main application routes from ./routes.","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] Mounted API router at /api.","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[Dispatch] Background dispatcher check interval set to 30s.","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"level":"info","message":"[System] Server listening on port 5230","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"address":"127.0.0.1","code":"ECONNREFUSED","errno":-4078,"level":"error","message":"[Redis] Redis Client Error: connect ECONNREFUSED 127.0.0.1:6379","port":6379,"service":"ride-hailing-app","stack":"Error: connect ECONNREFUSED 127.0.0.1:6379\n    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1634:16)","syscall":"connect","timestamp":"2025-05-11 16:58:23"}
+{"level":"warn","message":"[Redis] Client reconnecting...","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"address":"127.0.0.1","code":"ECONNREFUSED","errno":-4078,"level":"error","message":"[Redis] Redis Client Error: connect ECONNREFUSED 127.0.0.1:6379","port":6379,"service":"ride-hailing-app","stack":"Error: connect ECONNREFUSED 127.0.0.1:6379\n    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1634:16)","syscall":"connect","timestamp":"2025-05-11 16:58:23"}
+{"level":"warn","message":"[Redis] Client reconnecting...","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"address":"127.0.0.1","code":"ECONNREFUSED","errno":-4078,"level":"error","message":"[Redis] Redis Client Error: connect ECONNREFUSED 127.0.0.1:6379","port":6379,"service":"ride-hailing-app","stack":"Error: connect ECONNREFUSED 127.0.0.1:6379\n    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1634:16)","syscall":"connect","timestamp":"2025-05-11 16:58:23"}
+{"level":"warn","message":"[Redis] Client reconnecting...","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"address":"127.0.0.1","code":"ECONNREFUSED","errno":-4078,"level":"error","message":"[Redis] Redis Client Error: connect ECONNREFUSED 127.0.0.1:6379","port":6379,"service":"ride-hailing-app","stack":"Error: connect ECONNREFUSED 127.0.0.1:6379\n    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1634:16)","syscall":"connect","timestamp":"2025-05-11 16:58:23"}
+{"level":"warn","message":"[Redis] Client reconnecting...","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"address":"127.0.0.1","code":"ECONNREFUSED","errno":-4078,"level":"error","message":"[Redis] Redis Client Error: connect ECONNREFUSED 127.0.0.1:6379","port":6379,"service":"ride-hailing-app","stack":"Error: connect ECONNREFUSED 127.0.0.1:6379\n    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1634:16)","syscall":"connect","timestamp":"2025-05-11 16:58:23"}
+{"level":"warn","message":"[Redis] Client reconnecting...","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:23"}
+{"address":"127.0.0.1","code":"ECONNREFUSED","errno":-4078,"level":"error","message":"[Redis] Redis Client Error: connect ECONNREFUSED 127.0.0.1:6379","port":6379,"service":"ride-hailing-app","stack":"Error: connect ECONNREFUSED 127.0.0.1:6379\n    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1634:16)","syscall":"connect","timestamp":"2025-05-11 16:58:23"}
+{"level":"warn","message":"[Redis] Client reconnecting...","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:24"}
+{"address":"127.0.0.1","code":"ECONNREFUSED","errno":-4078,"level":"error","message":"[Redis] Redis Client Error: connect ECONNREFUSED 127.0.0.1:6379","port":6379,"service":"ride-hailing-app","stack":"Error: connect ECONNREFUSED 127.0.0.1:6379\n    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1634:16)","syscall":"connect","timestamp":"2025-05-11 16:58:24"}
+{"level":"warn","message":"[Redis] Client reconnecting...","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:24"}
+{"address":"127.0.0.1","code":"ECONNREFUSED","errno":-4078,"level":"error","message":"[Redis] Redis Client Error: connect ECONNREFUSED 127.0.0.1:6379","port":6379,"service":"ride-hailing-app","stack":"Error: connect ECONNREFUSED 127.0.0.1:6379\n    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1634:16)","syscall":"connect","timestamp":"2025-05-11 16:58:24"}
+{"level":"warn","message":"[System] Received SIGINT. Shutting down gracefully...","service":"ride-hailing-app","timestamp":"2025-05-11 16:58:24"}

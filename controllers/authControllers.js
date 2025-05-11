@@ -1,3 +1,4 @@
+const financialAccount = require("../model/financialAccount");
 const FinancialAccount = require("../model/financialAccount");
 const User = require("../model/user");
 const jwt = require("jsonwebtoken");
@@ -122,6 +123,7 @@ module.exports.editAcount = async (req, res, next) => {
 module.exports.login = async (req, res) => {
   const { email, password } = req.body;
   try {
+    console.log(req.body);
     const user = await User.login(email, password);
     if (!user.financialAccount) {
       const newFinancialAccount = new financialAccount();

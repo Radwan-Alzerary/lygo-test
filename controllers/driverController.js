@@ -123,7 +123,10 @@ module.exports.register = async (req, res, next) => {
 module.exports.login = async (req, res) => {
   const { email, password } = req.body;
   try {
+    console.log(email, password);
+    console.log(email, password);
     const user = await Driver.login(email, password);
+    console.log(user);
     const token = createToken(user._id);
     res.cookie("jwt", token, {
       withCredentials: true,

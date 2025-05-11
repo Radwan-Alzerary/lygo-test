@@ -1,100 +1,107 @@
-const Customer = require("../model/customer");
+// controllers/authController.js
+const Customer         = require("../model/customer");
 const FinancialAccount = require("../model/financialAccount");
 const { handleErrors } = require("../utils/errorHandler");
-const axios = require("axios");
-const jwt = require("jsonwebtoken");
+const axios            = require("axios");
+const jwt              = require("jsonwebtoken");
 
+const OTP_SERVER_URL = process.env.OTP_SERVER_URL || "https://otp.niuraiq.com";
 
-const maxAge = 3000 * 24 * 60 * 60;
+const maxAge = 3000 * 24 * 60 * 60; // your JWT TTL
 const createToken = (id) => {
   return jwt.sign({ id }, "kishan sheth super secret key", {
     expiresIn: maxAge,
   });
 };
 
-
-
-
 module.exports.registerPhoneNumber = async (req, res, next) => {
   try {
     const { phoneNumber } = req.body;
-    // Check if the customer already exists
-    let customer = await Customer.findOne({ phoneNumber: phoneNumber });
+    if (!phoneNumber) {
+      return res
+        .status(400)
+        .json({ message: "phoneNumber and project are required" });
+    }
 
-    console.log(customer);
+    // 1) ensure customer + financialAccount
+    let customer = await Customer.findOne({ phoneNumber });
     if (!customer) {
       const financialAccount = new FinancialAccount();
       await financialAccount.save();
 
       customer = new Customer({
-        phoneNumber: phoneNumber,
+        phoneNumber,
+        project:"lygo",
         financialAccount: financialAccount._id,
       });
-
       await customer.save();
     }
 
-    // // Send the OTP via your own WhatsApp server
-    // const response = await axios.post("http://localhost:3004/register", {
-    //   phone: phoneNumber,
-    // });
+    // 2) call OTP server
+    const otpRes = await axios.post(`${OTP_SERVER_URL}/otp/send`, {
+      phone: phoneNumber,
+      project:"lygo",
+    });
 
-    if (1) {
-      res.status(200).json({ message: "OTP sent via WhatsApp" });
+    if (otpRes.data && otpRes.data.success) {
+      return res
+        .status(200)
+        .json({ message: "OTP sent via WhatsApp" });
     } else {
-      res.status(500).json({ message: "Failed to send OTP" });
+      return res
+        .status(500)
+        .json({ message: "Failed to send OTP" });
     }
-    // if (response.data === "OTP sent via WhatsApp") {
-    //   res.status(200).json({ message: "OTP sent via WhatsApp" });
-    // } else {
-    //   res.status(500).json({ message: "Failed to send OTP" });
-    // }
-
   } catch (err) {
-    console.log(err);
+    console.error("[registerPhoneNumber] error:", err);
     const errors = handleErrors(err);
-    res.json({ errors, sent: false });
+    return res.status(500).json({ errors, sent: false });
   }
 };
 
 module.exports.verifyOtp = async (req, res, next) => {
   try {
     const { phoneNumber, otp } = req.body;
-    console.log(phoneNumber, otp);
-    
-    // Verify the OTP via your own WhatsApp server
-    // https://api.toxlyiq.com/verify
-    // const response = await axios.post("http://localhost:3004/verify", {
-    //   phone: phoneNumber.toString(),
-    //   otp: otp.toString(),
-    // });
+    if (!phoneNumber || !otp) {
+      return res
+        .status(400)
+        .json({ message: "phoneNumber, project, and otp are required" });
+    }
 
-    if (1) {
-      // OTP is valid, create JWT token
+    // call OTP server to verify
+    const verifyRes = await axios.post(`${OTP_SERVER_URL}/otp/verify`, {
+      phone: phoneNumber.toString(),
+      project: "lygo",
+      otp: otp.toString(),
+    });
+
+    if (verifyRes.data && verifyRes.data.accepted) {
+      // OTP valid → issue JWT
       const customer = await Customer.findOne({ phoneNumber });
-
       if (!customer) {
         return res.status(400).json({ message: "Customer not found" });
       }
 
       const token = createToken(customer._id);
-
-      // Set the JWT token in the response
       res.cookie("jwt", token, {
         withCredentials: true,
         httpOnly: false,
         maxAge: maxAge * 1000,
       });
 
-      res
-        .status(200)
-        .json({ token, message: "OTP verified and JWT token created" });
+      return res.status(200).json({
+        token,
+        message: "OTP verified and JWT token created",
+      });
     } else {
-      res.status(400).json({ message: "Invalid or expired OTP" });
+      // OTP rejected
+      const errMsg =
+        verifyRes.data.error || "Invalid or expired OTP";
+      return res.status(400).json({ message: errMsg });
     }
   } catch (err) {
-    console.log(err.message);
+    console.error("[verifyOtp] error:", err.message);
     const errors = handleErrors(err);
-    res.json({ errors, verified: false });
+    return res.status(500).json({ errors, verified: false });
   }
 };

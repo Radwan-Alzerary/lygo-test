@@ -28,20 +28,16 @@ driverSchema.pre("save", async function (next) {
   this.password = await bcrypt.hash(this.password, salt);
   next();
 });
-
-driverSchema.statics.login = async function (email, password) {
+driverSchema.statics.login = async function(email, password) {
+  console.log("static login got:", { email, password });
   const user = await this.findOne({ email });
-  if (user) {
-    console.log(user);
-    const auth = await bcrypt.compare(password, user.password);
-    if (auth) {
-      return user;
-    }
-    throw Error("incorrect password");
-  }
-  throw Error("incorrect email");
+  console.log("found user:", user);
+  if (!user) throw Error("incorrect email");
+  const auth = await bcrypt.compare(password, user.password);
+  console.log("bcrypt.compare result:", auth);
+  if (!auth) throw Error("incorrect password");
+  return user;
 };
-
 driverSchema.index({ currentLocation: "2dsphere" });
 
 module.exports = mongoose.model("Driver", driverSchema);

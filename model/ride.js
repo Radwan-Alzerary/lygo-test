@@ -64,11 +64,20 @@ const rideSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    pickupAddress:   { type: String },   // حي الجامعة، الموصل …
+dropoffAddress:  { type: String },
+
   },
   {
     timestamps: true,
   }
 );
+rideSchema.pre('save', function (next) {
+  if (this.isModified('status')) {
+    this.notified = false;          // let the next connection deliver the new status
+  }
+  next();
+});
 
 // Adding indexes for geospatial queries
 rideSchema.index({ pickupLocation: "2dsphere" });

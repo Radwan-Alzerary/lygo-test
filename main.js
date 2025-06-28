@@ -72,19 +72,19 @@ redisClient.on("error", (err) => {
 });
 
 redisClient.on('connect', () => {
-    logger.info('[Redis] Client connecting...');
+  logger.info('[Redis] Client connecting...');
 });
 
 redisClient.on('ready', () => {
-    logger.info('[Redis] Client ready.');
+  logger.info('[Redis] Client ready.');
 });
 
 redisClient.on('reconnecting', () => {
-    logger.warn('[Redis] Client reconnecting...');
+  logger.warn('[Redis] Client reconnecting...');
 });
 
 redisClient.on('end', () => {
-    logger.warn('[Redis] Client connection ended.');
+  logger.warn('[Redis] Client connection ended.');
 });
 
 
@@ -150,9 +150,9 @@ const findNearbyCaptains = async (origin, radius = 2) => {
 function calculateDistance(coord1, coord2) {
   // Basic check for valid inputs
   if (!coord1 || !coord2 || typeof coord1.latitude !== 'number' || typeof coord1.longitude !== 'number' ||
-      typeof coord2.latitude !== 'number' || typeof coord2.longitude !== 'number') {
-      logger.warn('[Util] Invalid coordinates passed to calculateDistance:', { coord1, coord2 });
-      return Infinity; // Return a large number or handle error appropriately
+    typeof coord2.latitude !== 'number' || typeof coord2.longitude !== 'number') {
+    logger.warn('[Util] Invalid coordinates passed to calculateDistance:', { coord1, coord2 });
+    return Infinity; // Return a large number or handle error appropriately
   }
 
   const toRad = (value) => (value * Math.PI) / 180;
@@ -167,9 +167,9 @@ function calculateDistance(coord1, coord2) {
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.sin(dLon / 2) *
-      Math.sin(dLon / 2) *
-      Math.cos(lat1) *
-      Math.cos(lat2);
+    Math.sin(dLon / 2) *
+    Math.cos(lat1) *
+    Math.cos(lat2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
   const distance = R * c; // Distance in km
@@ -225,12 +225,12 @@ customerNamespace.on("connection", (socket) => {
           logger.info(`[Socket.IO Customer] Processing ride ${ride._id} with status ${ride.status} for customer ${customerId}`);
           let captainInfo = null;
           if (ride.driver && ride.status !== 'requested' && ride.status !== 'notApprove' && ride.status !== 'cancelled') {
-              // Driver details should be populated if driver exists and ride is active/accepted
-              captainInfo = ride.driver ? { // Use populated data
-                name: ride.driver.name,
-                vehicle: ride.driver.carDetails,
-                phoneNumber: ride.driver.phoneNumber,
-              } : null; // Handle case where populate might fail or driver is null
+            // Driver details should be populated if driver exists and ride is active/accepted
+            captainInfo = ride.driver ? { // Use populated data
+              name: ride.driver.name,
+              vehicle: ride.driver.carDetails,
+              phoneNumber: ride.driver.phoneNumber,
+            } : null; // Handle case where populate might fail or driver is null
           }
 
           switch (ride.status) {
@@ -272,12 +272,12 @@ customerNamespace.on("connection", (socket) => {
               });
               break;
             case 'notApprove':
-               logger.info(`[Socket.IO Customer] Emitting 'rideNotApproved' for ride ${ride._id} to customer ${customerId}`);
-               socket.emit("rideNotApproved", {
-                 rideId: ride._id,
-                 message: "We couldn't find a captain for your previous request.", // Adjusted message
-               });
-               break;
+              logger.info(`[Socket.IO Customer] Emitting 'rideNotApproved' for ride ${ride._id} to customer ${customerId}`);
+              socket.emit("rideNotApproved", {
+                rideId: ride._id,
+                message: "We couldn't find a captain for your previous request.", // Adjusted message
+              });
+              break;
             case 'cancelled':
               logger.info(`[Socket.IO Customer] Emitting 'rideCanceled' for ride ${ride._id} to customer ${customerId}`);
               socket.emit("rideCanceled", {
@@ -286,7 +286,7 @@ customerNamespace.on("connection", (socket) => {
               });
               break;
             default:
-                logger.warn(`[Socket.IO Customer] Unknown ride status "${ride.status}" for ride ${ride._id}`);
+              logger.warn(`[Socket.IO Customer] Unknown ride status "${ride.status}" for ride ${ride._id}`);
           }
 
           // Mark the ride as notified - Debatable: Maybe only mark if status wasn't final?
@@ -308,8 +308,8 @@ customerNamespace.on("connection", (socket) => {
 
         // Basic validation
         if (!rideData || !rideData.origin || !rideData.destination ||
-            typeof rideData.origin.latitude !== "number" || typeof rideData.origin.longitude !== "number" ||
-            typeof rideData.destination.latitude !== "number" || typeof rideData.destination.longitude !== "number") {
+          typeof rideData.origin.latitude !== "number" || typeof rideData.origin.longitude !== "number" ||
+          typeof rideData.destination.latitude !== "number" || typeof rideData.destination.longitude !== "number") {
           logger.warn(`[Socket.IO Customer] Invalid rideData received from customer ${customerId}. Data: ${JSON.stringify(rideData)}`);
           socket.emit("rideError", { message: "Invalid location data provided. Please try again." });
           return;
@@ -323,9 +323,9 @@ customerNamespace.on("connection", (socket) => {
           });
 
           if (existingRide) {
-              logger.warn(`[Socket.IO Customer] Customer ${customerId} attempted to request a ride while ride ${existingRide._id} is active (status: ${existingRide.status}).`);
-              socket.emit("rideError", { message: `You already have an active ride (Status: ${existingRide.status}). Please wait or cancel it.` });
-              return;
+            logger.warn(`[Socket.IO Customer] Customer ${customerId} attempted to request a ride while ride ${existingRide._id} is active (status: ${existingRide.status}).`);
+            socket.emit("rideError", { message: `You already have an active ride (Status: ${existingRide.status}). Please wait or cancel it.` });
+            return;
           }
 
           logger.info(`[Socket.IO Customer] Creating new ride for customer ${customerId}`);
@@ -357,13 +357,13 @@ customerNamespace.on("connection", (socket) => {
 
           // Emit confirmation back to customer
           socket.emit('ridePending', { // Send pending confirmation
-            rideId         : newRide._id,
-            pickupLocation : newRide.pickupLocation.coordinates,
+            rideId: newRide._id,
+            pickupLocation: newRide.pickupLocation.coordinates,
             dropoffLocation: newRide.dropoffLocation.coordinates,
-            distance       : newRide.distance,
-            duration       : newRide.duration,
-            fare           : newRide.fare.amount,
-            message        : "Ride requested. Searching for nearby captains..."
+            distance: newRide.distance,
+            duration: newRide.duration,
+            fare: newRide.fare.amount,
+            message: "Ride requested. Searching for nearby captains..."
           });
 
           // Start the dispatch process
@@ -418,11 +418,11 @@ captainNamespace.on("connection", (socket) => {
     } else {
       const captainId = decoded.id;
       const oldSocketId = onlineCaptains[captainId];
-       if (oldSocketId && oldSocketId !== socket.id) {
+      if (oldSocketId && oldSocketId !== socket.id) {
         logger.warn(`[Socket.IO Captain] Captain ${captainId} already connected with socket ${oldSocketId}. Disconnecting old socket.`);
         const oldSocket = captainNamespace.sockets.get(oldSocketId);
         if (oldSocket) {
-            oldSocket.disconnect(true);
+          oldSocket.disconnect(true);
         }
       }
       onlineCaptains[captainId] = socket.id;
@@ -442,8 +442,8 @@ captainNamespace.on("connection", (socket) => {
           logger.info(`[DB] Found ongoing ride ${ongoingRide._id} (Status: ${ongoingRide.status}) for captain ${captainId}. Restoring state.`);
           // Add captain back to ride sharing map if needed (e.g., if server restarted)
           if (!rideSharingMap.has(captainId)) {
-              rideSharingMap.set(captainId, ongoingRide.passenger._id);
-              logger.info(`[State] Restored ride sharing for captain ${captainId} and customer ${ongoingRide.passenger._id}`);
+            rideSharingMap.set(captainId, ongoingRide.passenger._id);
+            logger.info(`[State] Restored ride sharing for captain ${captainId} and customer ${ongoingRide.passenger._id}`);
           }
 
           // Send the current ride details to the captain
@@ -456,9 +456,9 @@ captainNamespace.on("connection", (socket) => {
             duration: ongoingRide.duration,
             status: ongoingRide.status,
             passengerInfo: { // Send passenger info too
-                id: ongoingRide.passenger._id,
-                name: ongoingRide.passenger.name,
-                phoneNumber: ongoingRide.passenger.phoneNumber
+              id: ongoingRide.passenger._id,
+              name: ongoingRide.passenger.name,
+              phoneNumber: ongoingRide.passenger.phoneNumber
             }
           });
           logger.info(`[Socket.IO Captain] Emitted 'restoreRide' for ride ${ongoingRide._id} to captain ${captainId}`);
@@ -466,56 +466,54 @@ captainNamespace.on("connection", (socket) => {
           logger.info(`[Socket.IO Captain] No active ride found for captain ${captainId}. Checking for pending requests in area.`);
           // If no active ride, check Redis for captain's last known location and send pending requests
           try {
-             const captainLocation = await redisClient.geoPos("captains", captainId);
-             if (captainLocation && captainLocation.length > 0 && captainLocation[0]) {
-                const [lonStr, latStr] = captainLocation[0];
-                const longitude = parseFloat(lonStr);
-                const latitude = parseFloat(latStr);
-                logger.info(`[Redis] Captain ${captainId} last known location: (${longitude}, ${latitude})`);
+            const captainLocation = await redisClient.geoPos("captains", captainId);
+            if (captainLocation && captainLocation.length > 0 && captainLocation[0]) {
+              const { longitude: lonStr, latitude: latStr } = captainLocation[0];
+              const longitude = parseFloat(lonStr);
+              const latitude = parseFloat(latStr);
+              logger.info(`[Redis] Captain ${captainId} last known location: (${longitude}, ${latitude})`);
 
-                // Find nearby 'requested' rides (limit search for efficiency)
-                // Note: This might be less efficient than the dispatch loop approach.
-                // Consider if this is truly necessary or if the dispatch loop handles it sufficiently.
-                // For now, keeping it as per original logic.
-                const pendingRides = await Ride.find({
-                    status: "requested",
-                    // Optional: Add geospatial query here if DB supports it and it's indexed
-                    // pickupLocation: { $near: { $geometry: { type: "Point", coordinates: [longitude, latitude] }, $maxDistance: 10000 } } // 10km
-                 }); // Find all requested rides - potentially inefficient
+              // Find nearby 'requested' rides (limit search for efficiency)
+              // Note: This might be less efficient than the dispatch loop approach.
+              // Consider if this is truly necessary or if the dispatch loop handles it sufficiently.
+              // For now, keeping it as per original logic.
+              const pendingRides = await Ride.find({
+                status: "requested",
+              }); // Find all requested rides - potentially inefficient
 
-                logger.info(`[DB] Found ${pendingRides.length} rides with status 'requested'. Checking proximity for captain ${captainId}.`);
+              logger.info(`[DB] Found ${pendingRides.length} rides with status 'requested'. Checking proximity for captain ${captainId}.`);
 
-                let notifiedRideCount = 0;
-                for (let ride of pendingRides) {
-                  const distance = calculateDistance(
-                    { latitude, longitude },
-                    {
-                      latitude: ride.pickupLocation.coordinates[1],
-                      longitude: ride.pickupLocation.coordinates[0],
-                    }
-                  );
-                  // Use a reasonable radius, maybe configurable
-                  const notificationRadius = 10; // km
-                  if (distance <= notificationRadius) {
-                    notifiedRideCount++;
-                    logger.info(`[Socket.IO Captain] Ride ${ride._id} is within ${notificationRadius}km (${distance.toFixed(2)}km). Emitting 'newRide' to captain ${captainId}`);
-                    socket.emit("newRide", {
-                      rideId: ride._id,
-                      pickupLocation: ride.pickupLocation.coordinates,
-                      dropoffLocation: ride.dropoffLocation.coordinates,
-                      fare: ride.fare.amount,
-                      distance: ride.distance,
-                      duration: ride.duration,
-                      // You might want passenger rating or other info here
-                    });
+              let notifiedRideCount = 0;
+              for (let ride of pendingRides) {
+                const distance = calculateDistance(
+                  { latitude, longitude },
+                  {
+                    latitude: ride.pickupLocation.coordinates[1],
+                    longitude: ride.pickupLocation.coordinates[0],
                   }
+                );
+                // Use a reasonable radius, maybe configurable
+                const notificationRadius = 10; // km
+                if (distance <= notificationRadius) {
+                  notifiedRideCount++;
+                  logger.info(`[Socket.IO Captain] Ride ${ride._id} is within ${notificationRadius}km (${distance.toFixed(2)}km). Emitting 'newRide' to captain ${captainId}`);
+                  socket.emit("newRide", {
+                    rideId: ride._id,
+                    pickupLocation: ride.pickupLocation.coordinates,
+                    dropoffLocation: ride.dropoffLocation.coordinates,
+                    fare: ride.fare.amount,
+                    distance: ride.distance,
+                    duration: ride.duration,
+                    // You might want passenger rating or other info here
+                  });
                 }
-                 logger.info(`[Socket.IO Captain] Notified captain ${captainId} about ${notifiedRideCount} pending rides within ${notificationRadius}km.`);
-             } else {
-                logger.warn(`[Redis] No location found in Redis for captain ${captainId}. Cannot check for pending rides.`);
-             }
-          } catch(geoErr) {
-             logger.error(`[Redis] Error fetching captain ${captainId} location or checking pending rides:`, geoErr);
+              }
+              logger.info(`[Socket.IO Captain] Notified captain ${captainId} about ${notifiedRideCount} pending rides within ${notificationRadius}km.`);
+            } else {
+              logger.warn(`[Redis] No location found in Redis for captain ${captainId}. Cannot check for pending rides.`);
+            }
+          } catch (geoErr) {
+            logger.error(`[Redis] Error fetching captain ${captainId} location or checking pending rides:`, geoErr);
           }
         }
       } catch (err) {
@@ -526,10 +524,10 @@ captainNamespace.on("connection", (socket) => {
       socket.on("updateLocation", async (data) => {
         // Validate data
         if (!data || typeof data.latitude !== 'number' || typeof data.longitude !== 'number') {
-            logger.warn(`[Socket.IO Captain] Received invalid location update from captain ${captainId}. Data: ${JSON.stringify(data)}`);
-            // Optionally emit an error back to captain
-            // socket.emit("locationError", { message: "Invalid location data format." });
-            return;
+          logger.warn(`[Socket.IO Captain] Received invalid location update from captain ${captainId}. Data: ${JSON.stringify(data)}`);
+          // Optionally emit an error back to captain
+          // socket.emit("locationError", { message: "Invalid location data format." });
+          return;
         }
 
         logger.debug(`[Socket.IO Captain] Received 'updateLocation' from captain ${captainId}. Data: ${JSON.stringify(data)}`);
@@ -556,8 +554,8 @@ captainNamespace.on("connection", (socket) => {
             }
           }
         } catch (err) {
-           logger.error(`[Redis] Error saving location to Redis for captain ${captainId}:`, err);
-           socket.emit("locationError", { message: "Location update failed on server." }); // Inform captain
+          logger.error(`[Redis] Error saving location to Redis for captain ${captainId}:`, err);
+          socket.emit("locationError", { message: "Location update failed on server." }); // Inform captain
         }
       });
 
@@ -565,9 +563,9 @@ captainNamespace.on("connection", (socket) => {
       socket.on("acceptRide", async (data) => { // Assume data = { rideId: "..." } or just rideId string
         const rideId = typeof data === 'object' ? data.rideId : data; // Handle both possibilities
         if (!rideId) {
-            logger.warn(`[Socket.IO Captain] Received 'acceptRide' without rideId from captain ${captainId}.`);
-            socket.emit("rideError", { message: "Missing ride ID in acceptance request." });
-            return;
+          logger.warn(`[Socket.IO Captain] Received 'acceptRide' without rideId from captain ${captainId}.`);
+          socket.emit("rideError", { message: "Missing ride ID in acceptance request." });
+          return;
         }
 
         logger.info(`[Socket.IO Captain] Received 'acceptRide' for ride ${rideId} from captain ${captainId}. Socket ID: ${socket.id}`);
@@ -607,36 +605,36 @@ captainNamespace.on("connection", (socket) => {
             const customerSocketId = onlineCustomers[customerId];
             if (customerSocketId) {
               try {
-                  // Fetch captain's full info separately (or add more fields to populate)
-                  const captainInfo = await Captain.findById(captainId).select('name carDetails phoneNumber'); // Select specific fields
-                  if (!captainInfo) {
-                      throw new Error(`Captain ${captainId} not found in DB`);
+                // Fetch captain's full info separately (or add more fields to populate)
+                const captainInfo = await Captain.findById(captainId).select('name carDetails phoneNumber'); // Select specific fields
+                if (!captainInfo) {
+                  throw new Error(`Captain ${captainId} not found in DB`);
+                }
+                logger.info(`[Socket.IO Customer] Emitting 'rideAccepted' to customer ${customerId} (Socket: ${customerSocketId}) for ride ${rideId}`);
+                io.of("/customer").to(customerSocketId).emit("rideAccepted", {
+                  rideId: ride._id,
+                  driverId: captainId,
+                  driverInfo: { // Send relevant, non-sensitive info
+                    name: captainInfo.name,
+                    vehicle: captainInfo.carDetails,
+                    phoneNumber: captainInfo.phoneNumber, // Consider privacy implications
+                    // Add rating, eta etc. if available
+                  },
+                  passengerInfo: { // Send passenger info back to captain
+                    id: ride.passenger._id,
+                    name: ride.passenger.name,
+                    phoneNumber: ride.passenger.phoneNumber
                   }
-                  logger.info(`[Socket.IO Customer] Emitting 'rideAccepted' to customer ${customerId} (Socket: ${customerSocketId}) for ride ${rideId}`);
-                  io.of("/customer").to(customerSocketId).emit("rideAccepted", {
-                    rideId: ride._id,
-                    driverId: captainId,
-                    driverInfo: { // Send relevant, non-sensitive info
-                      name: captainInfo.name,
-                      vehicle: captainInfo.carDetails,
-                      phoneNumber: captainInfo.phoneNumber, // Consider privacy implications
-                      // Add rating, eta etc. if available
-                    },
-                    passengerInfo: { // Send passenger info back to captain
-                        id: ride.passenger._id,
-                        name: ride.passenger.name,
-                        phoneNumber: ride.passenger.phoneNumber
-                    }
-                  });
-              } catch(captainErr) {
-                   logger.error(`[DB] Failed to fetch captain details for captain ${captainId}:`, captainErr);
-                   // Inform customer, but maybe with partial info or a generic message
-                    io.of("/customer").to(customerSocketId).emit("rideAccepted", {
-                        rideId: ride._id,
-                        driverId: captainId,
-                        driverInfo: null, // Indicate info unavailable
-                         message: "Captain accepted, details loading..."
-                    });
+                });
+              } catch (captainErr) {
+                logger.error(`[DB] Failed to fetch captain details for captain ${captainId}:`, captainErr);
+                // Inform customer, but maybe with partial info or a generic message
+                io.of("/customer").to(customerSocketId).emit("rideAccepted", {
+                  rideId: ride._id,
+                  driverId: captainId,
+                  driverInfo: null, // Indicate info unavailable
+                  message: "Captain accepted, details loading..."
+                });
               }
 
             } else {
@@ -644,25 +642,25 @@ captainNamespace.on("connection", (socket) => {
               // Ride is still accepted, customer will see it on reconnect.
             }
 
-             // --- Start Location Sharing ---
+            // --- Start Location Sharing ---
             rideSharingMap.set(captainId, customerId);
             logger.info(`[State] Started ride sharing for captain ${captainId} and customer ${customerId}. Ride: ${rideId}`);
             logger.debug(`[State] Ride sharing map: ${JSON.stringify(Array.from(rideSharingMap.entries()))}`);
 
-             // --- Confirm Acceptance to Captain ---
-             logger.info(`[Socket.IO Captain] Emitting 'rideAcceptedConfirmation' to captain ${captainId} for ride ${rideId}`);
-             socket.emit('rideAcceptedConfirmation', {
-                 rideId: ride._id,
-                 status: ride.status,
-                 pickupLocation: ride.pickupLocation.coordinates,
-                 dropoffLocation: ride.dropoffLocation.coordinates,
-                 passengerInfo: { // Send passenger info to captain
-                     id: ride.passenger._id,
-                     name: ride.passenger.name,
-                     phoneNumber: ride.passenger.phoneNumber
-                 }
-                 // Add fare, distance etc. if needed
-             });
+            // --- Confirm Acceptance to Captain ---
+            logger.info(`[Socket.IO Captain] Emitting 'rideAcceptedConfirmation' to captain ${captainId} for ride ${rideId}`);
+            socket.emit('rideAcceptedConfirmation', {
+              rideId: ride._id,
+              status: ride.status,
+              pickupLocation: ride.pickupLocation.coordinates,
+              dropoffLocation: ride.dropoffLocation.coordinates,
+              passengerInfo: { // Send passenger info to captain
+                id: ride.passenger._id,
+                name: ride.passenger.name,
+                phoneNumber: ride.passenger.phoneNumber
+              }
+              // Add fare, distance etc. if needed
+            });
 
 
           } else {
@@ -679,257 +677,257 @@ captainNamespace.on("connection", (socket) => {
       // --- Listen for Captain Canceling Ride ---
       socket.on("cancelRide", async (data) => { // data = { rideId: "..." }
         const rideId = typeof data === 'object' ? data.rideId : data;
-         if (!rideId) {
-            logger.warn(`[Socket.IO Captain] Received 'cancelRide' without rideId from captain ${captainId}.`);
-            socket.emit("rideError", { message: "Missing ride ID in cancellation request." });
-            return;
+        if (!rideId) {
+          logger.warn(`[Socket.IO Captain] Received 'cancelRide' without rideId from captain ${captainId}.`);
+          socket.emit("rideError", { message: "Missing ride ID in cancellation request." });
+          return;
         }
         logger.info(`[Socket.IO Captain] Received 'cancelRide' for ride ${rideId} from captain ${captainId}`);
 
         try {
-            // Find the ride, ensure captain is assigned and status allows cancellation (e.g., accepted, arrived)
-            const ride = await Ride.findOne({ _id: rideId, driver: captainId });
+          // Find the ride, ensure captain is assigned and status allows cancellation (e.g., accepted, arrived)
+          const ride = await Ride.findOne({ _id: rideId, driver: captainId });
 
-            if (!ride) {
-                logger.warn(`[Socket.IO Captain] Captain ${captainId} tried to cancel ride ${rideId}, but ride was not found or captain not assigned.`);
-                socket.emit("rideError", { message: "Cannot cancel ride. Ride not found or you are not assigned.", rideId: rideId });
-                return;
-            }
+          if (!ride) {
+            logger.warn(`[Socket.IO Captain] Captain ${captainId} tried to cancel ride ${rideId}, but ride was not found or captain not assigned.`);
+            socket.emit("rideError", { message: "Cannot cancel ride. Ride not found or you are not assigned.", rideId: rideId });
+            return;
+          }
 
-            // Define cancellable statuses
-            const cancellableStatuses = ['accepted', 'arrived'];
-            if (!cancellableStatuses.includes(ride.status)) {
-                logger.warn(`[Socket.IO Captain] Captain ${captainId} tried to cancel ride ${rideId} with status ${ride.status}, which is not allowed.`);
-                socket.emit("rideError", { message: `Cannot cancel ride. Current status is '${ride.status}'.`, rideId: rideId });
-                return;
-            }
+          // Define cancellable statuses
+          const cancellableStatuses = ['accepted', 'arrived'];
+          if (!cancellableStatuses.includes(ride.status)) {
+            logger.warn(`[Socket.IO Captain] Captain ${captainId} tried to cancel ride ${rideId} with status ${ride.status}, which is not allowed.`);
+            socket.emit("rideError", { message: `Cannot cancel ride. Current status is '${ride.status}'.`, rideId: rideId });
+            return;
+          }
 
-            logger.info(`[DB] Updating ride ${rideId} status to 'requested' due to captain cancellation by ${captainId}. Previous status: ${ride.status}`);
-            // Reset ride state for re-dispatch
-            ride.status = "requested";
-            ride.driver = null; // Unassign driver
-            ride.isDispatching = true; // Mark for re-dispatch
-            ride.cancellationReason = `Cancelled by captain ${captainId} at status ${ride.status}`; // Optional: Add reason
-            await ride.save();
-            logger.info(`[DB] Ride ${rideId} status updated to 'requested'.`);
+          logger.info(`[DB] Updating ride ${rideId} status to 'requested' due to captain cancellation by ${captainId}. Previous status: ${ride.status}`);
+          // Reset ride state for re-dispatch
+          ride.status = "requested";
+          ride.driver = null; // Unassign driver
+          ride.isDispatching = true; // Mark for re-dispatch
+          ride.cancellationReason = `Cancelled by captain ${captainId} at status ${ride.status}`; // Optional: Add reason
+          await ride.save();
+          logger.info(`[DB] Ride ${rideId} status updated to 'requested'.`);
 
-            // --- Stop Location Sharing ---
-            if (rideSharingMap.has(captainId)) {
-                rideSharingMap.delete(captainId);
-                logger.info(`[State] Stopped ride sharing for captain ${captainId} due to cancellation. Ride: ${rideId}`);
-                logger.debug(`[State] Ride sharing map: ${JSON.stringify(Array.from(rideSharingMap.entries()))}`);
-            }
+          // --- Stop Location Sharing ---
+          if (rideSharingMap.has(captainId)) {
+            rideSharingMap.delete(captainId);
+            logger.info(`[State] Stopped ride sharing for captain ${captainId} due to cancellation. Ride: ${rideId}`);
+            logger.debug(`[State] Ride sharing map: ${JSON.stringify(Array.from(rideSharingMap.entries()))}`);
+          }
 
-            // --- Notify Customer ---
-            const customerId = ride.passenger; // Assuming passenger field holds the ID
-            const customerSocketId = onlineCustomers[customerId];
-            if (customerSocketId) {
-                logger.info(`[Socket.IO Customer] Emitting 'rideCanceled' to customer ${customerId} (Socket: ${customerSocketId}) for ride ${rideId}`);
-                io.of("/customer").to(customerSocketId).emit("rideCanceled", {
-                    rideId: ride._id,
-                    message: "The captain has canceled the ride. We are searching for another captain...",
-                    reason: "captain_canceled" // Provide a code
-                });
-            } else {
-                logger.warn(`[Socket.IO Customer] Customer ${customerId} is offline. Cannot send 'rideCanceled' notification for ride ${rideId}.`);
-            }
+          // --- Notify Customer ---
+          const customerId = ride.passenger; // Assuming passenger field holds the ID
+          const customerSocketId = onlineCustomers[customerId];
+          if (customerSocketId) {
+            logger.info(`[Socket.IO Customer] Emitting 'rideCanceled' to customer ${customerId} (Socket: ${customerSocketId}) for ride ${rideId}`);
+            io.of("/customer").to(customerSocketId).emit("rideCanceled", {
+              rideId: ride._id,
+              message: "The captain has canceled the ride. We are searching for another captain...",
+              reason: "captain_canceled" // Provide a code
+            });
+          } else {
+            logger.warn(`[Socket.IO Customer] Customer ${customerId} is offline. Cannot send 'rideCanceled' notification for ride ${rideId}.`);
+          }
 
-            // --- Confirm Cancellation to Captain ---
-            logger.info(`[Socket.IO Captain] Emitting 'rideCancelledConfirmation' to captain ${captainId} for ride ${rideId}`);
-            socket.emit("rideCancelledConfirmation", { rideId: ride._id, message: "Ride successfully cancelled." });
+          // --- Confirm Cancellation to Captain ---
+          logger.info(`[Socket.IO Captain] Emitting 'rideCancelledConfirmation' to captain ${captainId} for ride ${rideId}`);
+          socket.emit("rideCancelledConfirmation", { rideId: ride._id, message: "Ride successfully cancelled." });
 
 
-            // --- Restart Dispatch Process ---
-            logger.info(`[Dispatch] Restarting dispatch process for cancelled ride ${rideId}`);
-            const originCoords = {
-                latitude: ride.pickupLocation.coordinates[1],
-                longitude: ride.pickupLocation.coordinates[0],
-            };
-            dispatchRide(ride, originCoords); // Re-dispatch the ride
+          // --- Restart Dispatch Process ---
+          logger.info(`[Dispatch] Restarting dispatch process for cancelled ride ${rideId}`);
+          const originCoords = {
+            latitude: ride.pickupLocation.coordinates[1],
+            longitude: ride.pickupLocation.coordinates[0],
+          };
+          dispatchRide(ride, originCoords); // Re-dispatch the ride
 
         } catch (err) {
-            logger.error(`[Socket.IO Captain] Error cancelling ride ${rideId} for captain ${captainId}:`, err);
-            socket.emit("rideError", { message: "Failed to cancel ride due to a server error.", rideId: rideId });
+          logger.error(`[Socket.IO Captain] Error cancelling ride ${rideId} for captain ${captainId}:`, err);
+          socket.emit("rideError", { message: "Failed to cancel ride due to a server error.", rideId: rideId });
         }
       });
 
       // --- Listen for Captain Arriving ---
       socket.on("arrived", async (data) => { // data = { rideId: "..." }
-         const rideId = typeof data === 'object' ? data.rideId : data;
-         if (!rideId) {
-            logger.warn(`[Socket.IO Captain] Received 'arrived' without rideId from captain ${captainId}.`);
-            socket.emit("rideError", { message: "Missing ride ID in arrival notification." });
-            return;
+        const rideId = typeof data === 'object' ? data.rideId : data;
+        if (!rideId) {
+          logger.warn(`[Socket.IO Captain] Received 'arrived' without rideId from captain ${captainId}.`);
+          socket.emit("rideError", { message: "Missing ride ID in arrival notification." });
+          return;
         }
         logger.info(`[Socket.IO Captain] Received 'arrived' for ride ${rideId} from captain ${captainId}`);
 
         try {
-            // Update ride status only if it's currently 'accepted' and assigned to this captain
-            const ride = await Ride.findOneAndUpdate(
-                { _id: rideId, driver: captainId, status: "accepted" },
-                { $set: { status: "arrived" } },
-                { new: true } // Return updated document
-            );
+          // Update ride status only if it's currently 'accepted' and assigned to this captain
+          const ride = await Ride.findOneAndUpdate(
+            { _id: rideId, driver: captainId, status: "accepted" },
+            { $set: { status: "arrived" } },
+            { new: true } // Return updated document
+          );
 
-            if (ride) {
-                logger.info(`[DB] Ride ${rideId} status updated to 'arrived' by captain ${captainId}.`);
+          if (ride) {
+            logger.info(`[DB] Ride ${rideId} status updated to 'arrived' by captain ${captainId}.`);
 
-                // --- Notify Customer ---
-                const customerId = ride.passenger;
-                const customerSocketId = onlineCustomers[customerId];
-                if (customerSocketId) {
-                    logger.info(`[Socket.IO Customer] Emitting 'driverArrived' to customer ${customerId} (Socket: ${customerSocketId}) for ride ${rideId}`);
-                    io.of("/customer").to(customerSocketId).emit("driverArrived", {
-                        rideId: ride._id,
-                        message: "Your captain has arrived at the pickup location.",
-                    });
-                } else {
-                    logger.warn(`[Socket.IO Customer] Customer ${customerId} is offline. Cannot send 'driverArrived' notification for ride ${rideId}.`);
-                }
-
-                // --- Confirm Status Update to Captain ---
-                logger.info(`[Socket.IO Captain] Emitting 'rideStatusUpdate' (arrived) to captain ${captainId} for ride ${rideId}`);
-                socket.emit("rideStatusUpdate", { rideId: ride._id, status: "arrived" });
-
+            // --- Notify Customer ---
+            const customerId = ride.passenger;
+            const customerSocketId = onlineCustomers[customerId];
+            if (customerSocketId) {
+              logger.info(`[Socket.IO Customer] Emitting 'driverArrived' to customer ${customerId} (Socket: ${customerSocketId}) for ride ${rideId}`);
+              io.of("/customer").to(customerSocketId).emit("driverArrived", {
+                rideId: ride._id,
+                message: "Your captain has arrived at the pickup location.",
+              });
             } else {
-                // Ride not found, not assigned to captain, or status wasn't 'accepted'
-                 logger.warn(`[Socket.IO Captain] Captain ${captainId} tried to mark ride ${rideId} as 'arrived', but condition failed (not found, wrong captain, or status not 'accepted').`);
-                 // Check current status if possible
-                 const currentRide = await Ride.findById(rideId);
-                 const errorMsg = currentRide ? `Cannot mark as arrived. Current status is '${currentRide.status}'.` : "Ride not found or you are not assigned.";
-                 socket.emit("rideError", { message: errorMsg, rideId: rideId });
+              logger.warn(`[Socket.IO Customer] Customer ${customerId} is offline. Cannot send 'driverArrived' notification for ride ${rideId}.`);
             }
+
+            // --- Confirm Status Update to Captain ---
+            logger.info(`[Socket.IO Captain] Emitting 'rideStatusUpdate' (arrived) to captain ${captainId} for ride ${rideId}`);
+            socket.emit("rideStatusUpdate", { rideId: ride._id, status: "arrived" });
+
+          } else {
+            // Ride not found, not assigned to captain, or status wasn't 'accepted'
+            logger.warn(`[Socket.IO Captain] Captain ${captainId} tried to mark ride ${rideId} as 'arrived', but condition failed (not found, wrong captain, or status not 'accepted').`);
+            // Check current status if possible
+            const currentRide = await Ride.findById(rideId);
+            const errorMsg = currentRide ? `Cannot mark as arrived. Current status is '${currentRide.status}'.` : "Ride not found or you are not assigned.";
+            socket.emit("rideError", { message: errorMsg, rideId: rideId });
+          }
         } catch (err) {
-            logger.error(`[Socket.IO Captain] Error marking ride ${rideId} as arrived for captain ${captainId}:`, err);
-            socket.emit("rideError", { message: "Failed to mark ride as arrived due to a server error.", rideId: rideId });
+          logger.error(`[Socket.IO Captain] Error marking ride ${rideId} as arrived for captain ${captainId}:`, err);
+          socket.emit("rideError", { message: "Failed to mark ride as arrived due to a server error.", rideId: rideId });
         }
       });
 
       // --- Listen for Starting Ride ---
       socket.on("startRide", async (data) => { // data = { rideId: "..." }
-         const rideId = typeof data === 'object' ? data.rideId : data;
-         if (!rideId) {
-            logger.warn(`[Socket.IO Captain] Received 'startRide' without rideId from captain ${captainId}.`);
-            socket.emit("rideError", { message: "Missing ride ID in start ride request." });
-            return;
+        const rideId = typeof data === 'object' ? data.rideId : data;
+        if (!rideId) {
+          logger.warn(`[Socket.IO Captain] Received 'startRide' without rideId from captain ${captainId}.`);
+          socket.emit("rideError", { message: "Missing ride ID in start ride request." });
+          return;
         }
         logger.info(`[Socket.IO Captain] Received 'startRide' for ride ${rideId} from captain ${captainId}`);
 
         try {
-             // Update ride status only if it's currently 'arrived' and assigned to this captain
-            const ride = await Ride.findOneAndUpdate(
-                { _id: rideId, driver: captainId, status: "arrived" },
-                { $set: { status: "onRide", rideStartTime: new Date() } }, // Record start time
-                { new: true }
-            );
+          // Update ride status only if it's currently 'arrived' and assigned to this captain
+          const ride = await Ride.findOneAndUpdate(
+            { _id: rideId, driver: captainId, status: "arrived" },
+            { $set: { status: "onRide", rideStartTime: new Date() } }, // Record start time
+            { new: true }
+          );
 
-            if (ride) {
-                logger.info(`[DB] Ride ${rideId} status updated to 'onRide' by captain ${captainId}.`);
+          if (ride) {
+            logger.info(`[DB] Ride ${rideId} status updated to 'onRide' by captain ${captainId}.`);
 
-                // --- Notify Customer ---
-                const customerId = ride.passenger;
-                const customerSocketId = onlineCustomers[customerId];
-                if (customerSocketId) {
-                    logger.info(`[Socket.IO Customer] Emitting 'rideStarted' to customer ${customerId} (Socket: ${customerSocketId}) for ride ${rideId}`);
-                    io.of("/customer").to(customerSocketId).emit("rideStarted", {
-                        rideId: ride._id,
-                        message: "Your ride has started.",
-                    });
-                } else {
-                    logger.warn(`[Socket.IO Customer] Customer ${customerId} is offline. Cannot send 'rideStarted' notification for ride ${rideId}.`);
-                }
-
-                 // --- Confirm Status Update to Captain ---
-                logger.info(`[Socket.IO Captain] Emitting 'rideStatusUpdate' (onRide) to captain ${captainId} for ride ${rideId}`);
-                // Use specific event or generic status update
-                // socket.emit("rideStatusUpdate", { rideId: ride._id, status: "onRide" });
-                socket.emit("rideStartedConfirmation", { rideId: ride._id, status: "onRide" }); // More specific confirmation
-
+            // --- Notify Customer ---
+            const customerId = ride.passenger;
+            const customerSocketId = onlineCustomers[customerId];
+            if (customerSocketId) {
+              logger.info(`[Socket.IO Customer] Emitting 'rideStarted' to customer ${customerId} (Socket: ${customerSocketId}) for ride ${rideId}`);
+              io.of("/customer").to(customerSocketId).emit("rideStarted", {
+                rideId: ride._id,
+                message: "Your ride has started.",
+              });
             } else {
-                // Ride not found, not assigned to captain, or status wasn't 'arrived'
-                logger.warn(`[Socket.IO Captain] Captain ${captainId} tried to start ride ${rideId}, but condition failed (not found, wrong captain, or status not 'arrived').`);
-                const currentRide = await Ride.findById(rideId);
-                const errorMsg = currentRide ? `Cannot start ride. Current status is '${currentRide.status}'.` : "Ride not found or you are not assigned.";
-                socket.emit("rideError", { message: errorMsg, rideId: rideId });
+              logger.warn(`[Socket.IO Customer] Customer ${customerId} is offline. Cannot send 'rideStarted' notification for ride ${rideId}.`);
             }
+
+            // --- Confirm Status Update to Captain ---
+            logger.info(`[Socket.IO Captain] Emitting 'rideStatusUpdate' (onRide) to captain ${captainId} for ride ${rideId}`);
+            // Use specific event or generic status update
+            // socket.emit("rideStatusUpdate", { rideId: ride._id, status: "onRide" });
+            socket.emit("rideStartedConfirmation", { rideId: ride._id, status: "onRide" }); // More specific confirmation
+
+          } else {
+            // Ride not found, not assigned to captain, or status wasn't 'arrived'
+            logger.warn(`[Socket.IO Captain] Captain ${captainId} tried to start ride ${rideId}, but condition failed (not found, wrong captain, or status not 'arrived').`);
+            const currentRide = await Ride.findById(rideId);
+            const errorMsg = currentRide ? `Cannot start ride. Current status is '${currentRide.status}'.` : "Ride not found or you are not assigned.";
+            socket.emit("rideError", { message: errorMsg, rideId: rideId });
+          }
         } catch (err) {
-            logger.error(`[Socket.IO Captain] Error starting ride ${rideId} for captain ${captainId}:`, err);
-            socket.emit("rideError", { message: "Failed to start ride due to a server error.", rideId: rideId });
+          logger.error(`[Socket.IO Captain] Error starting ride ${rideId} for captain ${captainId}:`, err);
+          socket.emit("rideError", { message: "Failed to start ride due to a server error.", rideId: rideId });
         }
       });
 
       // --- Listen for Ending Ride ---
       socket.on("endRide", async (data) => { // data = { rideId: "..." }
-         const rideId = typeof data === 'object' ? data.rideId : data;
-         if (!rideId) {
-            logger.warn(`[Socket.IO Captain] Received 'endRide' without rideId from captain ${captainId}.`);
-            socket.emit("rideError", { message: "Missing ride ID in end ride request." });
-            return;
+        const rideId = typeof data === 'object' ? data.rideId : data;
+        if (!rideId) {
+          logger.warn(`[Socket.IO Captain] Received 'endRide' without rideId from captain ${captainId}.`);
+          socket.emit("rideError", { message: "Missing ride ID in end ride request." });
+          return;
         }
         logger.info(`[Socket.IO Captain] Received 'endRide' for ride ${rideId} from captain ${captainId}`);
 
         try {
-            // Update ride status only if it's currently 'onRide' and assigned to this captain
-            const ride = await Ride.findOneAndUpdate(
-                { _id: rideId, driver: captainId, status: "onRide" },
-                {
-                    $set: {
-                        status: "completed",
-                        rideEndTime: new Date(),
-                        isDispatching: false // Ensure dispatching is off
-                    }
-                },
-                { new: true }
-            );
+          // Update ride status only if it's currently 'onRide' and assigned to this captain
+          const ride = await Ride.findOneAndUpdate(
+            { _id: rideId, driver: captainId, status: "onRide" },
+            {
+              $set: {
+                status: "completed",
+                rideEndTime: new Date(),
+                isDispatching: false // Ensure dispatching is off
+              }
+            },
+            { new: true }
+          );
 
-            if (ride) {
-                logger.info(`[DB] Ride ${rideId} status updated to 'completed' by captain ${captainId}.`);
+          if (ride) {
+            logger.info(`[DB] Ride ${rideId} status updated to 'completed' by captain ${captainId}.`);
 
-                // --- Notify Customer ---
-                const customerId = ride.passenger;
-                const customerSocketId = onlineCustomers[customerId];
-                if (customerSocketId) {
-                     logger.info(`[Socket.IO Customer] Emitting 'rideCompleted' to customer ${customerId} (Socket: ${customerSocketId}) for ride ${rideId}`);
-                    io.of("/customer").to(customerSocketId).emit("rideCompleted", {
-                        rideId: ride._id,
-                        message: "Your ride has been completed. Thank you for riding with us!",
-                        fare: ride.fare.amount, // Send final fare
-                        // Add distance, duration etc if needed
-                    });
-                } else {
-                     logger.warn(`[Socket.IO Customer] Customer ${customerId} is offline. Cannot send 'rideCompleted' notification for ride ${rideId}.`);
-                }
-
-                // --- Confirm Status Update to Captain ---
-                logger.info(`[Socket.IO Captain] Emitting 'rideStatusUpdate' (completed) to captain ${captainId} for ride ${rideId}`);
-                socket.emit("rideStatusUpdate", {
-                    rideId: ride._id,
-                    status: "completed",
-                    message: "Ride successfully completed."
-                });
-
-                // --- Clean Up State ---
-                if (rideSharingMap.has(captainId)) {
-                    rideSharingMap.delete(captainId);
-                    logger.info(`[State] Stopped ride sharing for captain ${captainId} after ride completion. Ride: ${rideId}`);
-                    logger.debug(`[State] Ride sharing map: ${JSON.stringify(Array.from(rideSharingMap.entries()))}`);
-                }
-
-                // Optionally, remove captain's location from Redis if they are now considered 'off-duty' until next update
-                // Be careful with this - only remove if they explicitly go offline or inactive
-                // await redisClient.zRem("captains", captainId);
-                // logger.info(`[Redis] Removed captain ${captainId} from active captains set after ride completion.`);
-
+            // --- Notify Customer ---
+            const customerId = ride.passenger;
+            const customerSocketId = onlineCustomers[customerId];
+            if (customerSocketId) {
+              logger.info(`[Socket.IO Customer] Emitting 'rideCompleted' to customer ${customerId} (Socket: ${customerSocketId}) for ride ${rideId}`);
+              io.of("/customer").to(customerSocketId).emit("rideCompleted", {
+                rideId: ride._id,
+                message: "Your ride has been completed. Thank you for riding with us!",
+                fare: ride.fare.amount, // Send final fare
+                // Add distance, duration etc if needed
+              });
             } else {
-                // Ride not found, not assigned to captain, or status wasn't 'onRide'
-                logger.warn(`[Socket.IO Captain] Captain ${captainId} tried to end ride ${rideId}, but condition failed (not found, wrong captain, or status not 'onRide').`);
-                const currentRide = await Ride.findById(rideId);
-                const errorMsg = currentRide ? `Cannot end ride. Current status is '${currentRide.status}'.` : "Ride not found or you are not assigned.";
-                socket.emit("rideError", { message: errorMsg, rideId: rideId });
+              logger.warn(`[Socket.IO Customer] Customer ${customerId} is offline. Cannot send 'rideCompleted' notification for ride ${rideId}.`);
             }
+
+            // --- Confirm Status Update to Captain ---
+            logger.info(`[Socket.IO Captain] Emitting 'rideStatusUpdate' (completed) to captain ${captainId} for ride ${rideId}`);
+            socket.emit("rideStatusUpdate", {
+              rideId: ride._id,
+              status: "completed",
+              message: "Ride successfully completed."
+            });
+
+            // --- Clean Up State ---
+            if (rideSharingMap.has(captainId)) {
+              rideSharingMap.delete(captainId);
+              logger.info(`[State] Stopped ride sharing for captain ${captainId} after ride completion. Ride: ${rideId}`);
+              logger.debug(`[State] Ride sharing map: ${JSON.stringify(Array.from(rideSharingMap.entries()))}`);
+            }
+
+            // Optionally, remove captain's location from Redis if they are now considered 'off-duty' until next update
+            // Be careful with this - only remove if they explicitly go offline or inactive
+            // await redisClient.zRem("captains", captainId);
+            // logger.info(`[Redis] Removed captain ${captainId} from active captains set after ride completion.`);
+
+          } else {
+            // Ride not found, not assigned to captain, or status wasn't 'onRide'
+            logger.warn(`[Socket.IO Captain] Captain ${captainId} tried to end ride ${rideId}, but condition failed (not found, wrong captain, or status not 'onRide').`);
+            const currentRide = await Ride.findById(rideId);
+            const errorMsg = currentRide ? `Cannot end ride. Current status is '${currentRide.status}'.` : "Ride not found or you are not assigned.";
+            socket.emit("rideError", { message: errorMsg, rideId: rideId });
+          }
         } catch (err) {
-             logger.error(`[Socket.IO Captain] Error ending ride ${rideId} for captain ${captainId}:`, err);
-            socket.emit("rideError", { message: "Failed to end ride due to a server error.", rideId: rideId });
+          logger.error(`[Socket.IO Captain] Error ending ride ${rideId} for captain ${captainId}:`, err);
+          socket.emit("rideError", { message: "Failed to end ride due to a server error.", rideId: rideId });
         }
       });
 
@@ -947,20 +945,20 @@ captainNamespace.on("connection", (socket) => {
             break;
           }
         }
-         // Clean up ride sharing map if the disconnected captain was in it
-         if (rideSharingMap.has(captainId)) {
-             const customerId = rideSharingMap.get(captainId);
-             rideSharingMap.delete(captainId);
-             logger.warn(`[State] Captain ${captainId} disconnected during active ride sharing with customer ${customerId}. Ride sharing stopped.`);
-             logger.debug(`[State] Ride sharing map: ${JSON.stringify(Array.from(rideSharingMap.entries()))}`);
-             // Optionally notify the customer that the captain went offline
-             // const customerSocketId = onlineCustomers[customerId];
-             // if (customerSocketId) { io.of("/customer").to(customerSocketId).emit("captainOffline"); }
-         }
+        // Clean up ride sharing map if the disconnected captain was in it
+        if (rideSharingMap.has(captainId)) {
+          const customerId = rideSharingMap.get(captainId);
+          rideSharingMap.delete(captainId);
+          logger.warn(`[State] Captain ${captainId} disconnected during active ride sharing with customer ${customerId}. Ride sharing stopped.`);
+          logger.debug(`[State] Ride sharing map: ${JSON.stringify(Array.from(rideSharingMap.entries()))}`);
+          // Optionally notify the customer that the captain went offline
+          // const customerSocketId = onlineCustomers[customerId];
+          // if (customerSocketId) { io.of("/customer").to(customerSocketId).emit("captainOffline"); }
+        }
       });
 
-       // --- Handle Socket Errors ---
-       socket.on('error', (error) => {
+      // --- Handle Socket Errors ---
+      socket.on('error', (error) => {
         logger.error(`[Socket.IO Captain] Socket error for captain ${captainId} on socket ${socket.id}:`, error);
       });
     }
@@ -977,7 +975,7 @@ async function dispatchRide(ride, origin) {
   const radiusIncrement = 1; // Radius increment in km (was 0.5, increased for faster expansion)
   const notificationTimeout = 15 * 1000; // Time to wait for a captain to accept (15 seconds)
   const maxDispatchTime = 5 * 60 * 1000; // Max time to search (5 minutes) - was 10
-  const graceAfterMaxRadius    = 30 * 1000;  // ← NEW – 30 s extra wait
+  const graceAfterMaxRadius = 30 * 1000;  // ← NEW – 30 s extra wait
 
   const dispatchStartTime = Date.now();
 
@@ -1007,9 +1005,9 @@ async function dispatchRide(ride, origin) {
       // Check if the ride object still exists and is 'requested' before searching
       const currentRideState = await Ride.findById(rideId).select('status');
       if (!currentRideState || currentRideState.status !== 'requested') {
-          logger.warn(`[Dispatch] Ride ${rideId} is no longer in 'requested' state (current: ${currentRideState?.status}). Stopping dispatch.`);
-          cancelDispatch = true;
-          break;
+        logger.warn(`[Dispatch] Ride ${rideId} is no longer in 'requested' state (current: ${currentRideState?.status}). Stopping dispatch.`);
+        cancelDispatch = true;
+        break;
       }
 
 
@@ -1052,35 +1050,35 @@ async function dispatchRide(ride, origin) {
             // A better real-world system uses a "broadcast and wait" or assigns to one captain at a time with shorter timeouts.
 
             // *** Simplified (but still sequential) wait for demonstration ***
-             logger.debug(`[Dispatch] Ride ${rideId}: Waiting ${notificationTimeout / 1000}s for captain ${captainId} to potentially accept.`);
-             await new Promise((resolve) => setTimeout(resolve, notificationTimeout));
+            logger.debug(`[Dispatch] Ride ${rideId}: Waiting ${notificationTimeout / 1000}s for captain ${captainId} to potentially accept.`);
+            await new Promise((resolve) => setTimeout(resolve, notificationTimeout));
 
-             // Check if the ride was accepted *during* the wait
-             const updatedRide = await Ride.findById(rideId).select('status driver'); // Select only needed fields
-             if (updatedRide && updatedRide.status === "accepted") {
-               accepted = true; // Mark as accepted
-               logger.info(`[Dispatch] Ride ${rideId} was accepted by captain ${updatedRide.driver} during wait period.`);
-               // No need to set cancelDispatch=true here, the 'accepted' flag stops the outer loop
-               break; // Exit the inner captain loop
-             } else {
-                 logger.info(`[Dispatch] Ride ${rideId}: Captain ${captainId} did not accept within ${notificationTimeout / 1000}s (or ride status changed). Current status: ${updatedRide?.status}`);
-             }
-             // --- End Simplified Wait ---
+            // Check if the ride was accepted *during* the wait
+            const updatedRide = await Ride.findById(rideId).select('status driver'); // Select only needed fields
+            if (updatedRide && updatedRide.status === "accepted") {
+              accepted = true; // Mark as accepted
+              logger.info(`[Dispatch] Ride ${rideId} was accepted by captain ${updatedRide.driver} during wait period.`);
+              // No need to set cancelDispatch=true here, the 'accepted' flag stops the outer loop
+              break; // Exit the inner captain loop
+            } else {
+              logger.info(`[Dispatch] Ride ${rideId}: Captain ${captainId} did not accept within ${notificationTimeout / 1000}s (or ride status changed). Current status: ${updatedRide?.status}`);
+            }
+            // --- End Simplified Wait ---
           }
         } // End captain loop
 
         // If we found new captains in this radius, wait a bit before expanding radius further
         // This gives notified captains a chance to accept without immediately widening the search.
         if (newCaptainsFoundInRadius && !accepted && !cancelDispatch) {
-            logger.debug(`[Dispatch] Ride ${rideId}: Pausing briefly after notifying captains in radius ${radius}km.`);
-            await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
+          logger.debug(`[Dispatch] Ride ${rideId}: Pausing briefly after notifying captains in radius ${radius}km.`);
+          await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
 
-            // Re-check if accepted during the pause
-             const updatedRide = await Ride.findById(rideId).select('status');
-             if (updatedRide && updatedRide.status === "accepted") {
-               accepted = true;
-               logger.info(`[Dispatch] Ride ${rideId} was accepted during pause.`);
-             }
+          // Re-check if accepted during the pause
+          const updatedRide = await Ride.findById(rideId).select('status');
+          if (updatedRide && updatedRide.status === "accepted") {
+            accepted = true;
+            logger.info(`[Dispatch] Ride ${rideId} was accepted during pause.`);
+          }
         }
 
       } else {
@@ -1100,31 +1098,31 @@ async function dispatchRide(ride, origin) {
     // Check *after* the loop finishes
     const finalRideState = await Ride.findById(rideId); // Get the latest state
 
-     if (accepted) {
-        // Ride was accepted by someone, log success. State changes handled in 'acceptRide'
-        logger.info(`[Dispatch] Ride ${rideId} successfully accepted by captain ${finalRideState?.driver}. Dispatch process complete.`);
-     } else if (cancelDispatch) {
-        // Dispatch was cancelled externally (e.g., accepted via API/another process) or timed out
-        logger.warn(`[Dispatch] Dispatch for ride ${rideId} was cancelled or timed out.`);
-        // If timeout occurred specifically, mark as notApprove
-        if (Date.now() - dispatchStartTime >= maxDispatchTime && finalRideState && finalRideState.status === 'requested') {
-            logger.warn(`[Dispatch] Ride ${rideId} timed out. Updating status to 'notApprove'.`);
-            finalRideState.status = "notApprove";
-            finalRideState.isDispatching = false;
-            await finalRideState.save();
-            logger.info(`[DB] Ride ${rideId} status updated to 'notApprove'.`);
+    if (accepted) {
+      // Ride was accepted by someone, log success. State changes handled in 'acceptRide'
+      logger.info(`[Dispatch] Ride ${rideId} successfully accepted by captain ${finalRideState?.driver}. Dispatch process complete.`);
+    } else if (cancelDispatch) {
+      // Dispatch was cancelled externally (e.g., accepted via API/another process) or timed out
+      logger.warn(`[Dispatch] Dispatch for ride ${rideId} was cancelled or timed out.`);
+      // If timeout occurred specifically, mark as notApprove
+      if (Date.now() - dispatchStartTime >= maxDispatchTime && finalRideState && finalRideState.status === 'requested') {
+        logger.warn(`[Dispatch] Ride ${rideId} timed out. Updating status to 'notApprove'.`);
+        finalRideState.status = "notApprove";
+        finalRideState.isDispatching = false;
+        await finalRideState.save();
+        logger.info(`[DB] Ride ${rideId} status updated to 'notApprove'.`);
 
-            // Notify customer
-            const customerSocketId = onlineCustomers[finalRideState.passenger];
-            if (customerSocketId) {
-                 logger.info(`[Socket.IO Customer] Emitting 'rideNotApproved' (timeout) to customer ${finalRideState.passenger} for ride ${rideId}`);
-                 io.of("/customer").to(customerSocketId).emit("rideNotApproved", {
-                    rideId: ride._id,
-                    message: "We couldn't find a nearby captain in time. Please try requesting again.",
-                 });
-            }
+        // Notify customer
+        const customerSocketId = onlineCustomers[finalRideState.passenger];
+        if (customerSocketId) {
+          logger.info(`[Socket.IO Customer] Emitting 'rideNotApproved' (timeout) to customer ${finalRideState.passenger} for ride ${rideId}`);
+          io.of("/customer").to(customerSocketId).emit("rideNotApproved", {
+            rideId: ride._id,
+            message: "We couldn't find a nearby captain in time. Please try requesting again.",
+          });
         }
-     } /******************************************************************
+      }
+    } /******************************************************************
      *  ⭕  Max radius reached — wait a final 30 s before giving up   *
      ******************************************************************/
     else if (radius > maxRadius && !cancelDispatch && !accepted) {
@@ -1132,14 +1130,14 @@ async function dispatchRide(ride, origin) {
         `[Dispatch] Ride ${rideId}: reached max radius (${maxRadius} km). ` +
         `Holding for an extra ${graceAfterMaxRadius / 1000}s before aborting.`,
       );
-    
+
       // non‑blocking sleep, polling every 5 s in case someone accepts
       const pollInterval = 5 * 1000;
-      const giveUpAt     = Date.now() + graceAfterMaxRadius;
-    
+      const giveUpAt = Date.now() + graceAfterMaxRadius;
+
       while (Date.now() < giveUpAt && !accepted && !cancelDispatch) {
         await new Promise(res => setTimeout(res, pollInterval));
-    
+
         const stillRequested = await Ride.findById(rideId).select('status driver');
         if (stillRequested?.status === 'accepted') {
           accepted = true;
@@ -1149,24 +1147,24 @@ async function dispatchRide(ride, origin) {
           );
         }
       }
-    
+
       if (!accepted && !cancelDispatch) {
         logger.warn(
           `[Dispatch] Ride ${rideId}: no acceptance after extra 30 s. ` +
           `Updating status to 'notApprove'.`,
         );
-    
+
         const rideDoc = await Ride.findById(rideId);
         if (rideDoc && rideDoc.status === 'requested') {
-          rideDoc.status        = 'notApprove';
+          rideDoc.status = 'notApprove';
           rideDoc.isDispatching = false;
           await rideDoc.save();
           logger.info(`[DB] Ride ${rideId} status updated to 'notApprove'.`);
-    
+
           const custSock = onlineCustomers[rideDoc.passenger];
           if (custSock) {
             io.of('/customer').to(custSock).emit('rideNotApproved', {
-              rideId : rideDoc._id,
+              rideId: rideDoc._id,
               message:
                 'لم نعثر على كابتن قريب في الوقت الحالي، الرجاء المحاولة مرة أخرى لاحقاً.',
             });
@@ -1174,26 +1172,26 @@ async function dispatchRide(ride, origin) {
         }
       }
     }
-     else {
-         // Should not happen if logic is correct
-         logger.warn(`[Dispatch] Ride ${rideId}: Dispatch loop ended with unexpected state (not accepted, not cancelled, radius <= maxRadius). Final Status: ${finalRideState?.status}`);
-     }
+    else {
+      // Should not happen if logic is correct
+      logger.warn(`[Dispatch] Ride ${rideId}: Dispatch loop ended with unexpected state (not accepted, not cancelled, radius <= maxRadius). Final Status: ${finalRideState?.status}`);
+    }
 
   } catch (err) {
     logger.error(`[Dispatch] Error during dispatch process for ride ${rideId}:`, err);
     // Attempt to mark ride as failed or log the issue without crashing
     try {
-        const rideToUpdate = await Ride.findById(rideId);
-        if (rideToUpdate && rideToUpdate.status === 'requested') {
-            rideToUpdate.status = 'failed'; // Or keep requested and retry?
-            rideToUpdate.isDispatching = false;
-            rideToUpdate.cancellationReason = `Dispatch error: ${err.message}`;
-            await rideToUpdate.save();
-            logger.info(`[DB] Marked ride ${rideId} as 'failed' due to dispatch error.`);
-            // Notify customer?
-        }
+      const rideToUpdate = await Ride.findById(rideId);
+      if (rideToUpdate && rideToUpdate.status === 'requested') {
+        rideToUpdate.status = 'failed'; // Or keep requested and retry?
+        rideToUpdate.isDispatching = false;
+        rideToUpdate.cancellationReason = `Dispatch error: ${err.message}`;
+        await rideToUpdate.save();
+        logger.info(`[DB] Marked ride ${rideId} as 'failed' due to dispatch error.`);
+        // Notify customer?
+      }
     } catch (saveErr) {
-        logger.error(`[Dispatch] Failed to update ride ${rideId} status after dispatch error:`, saveErr);
+      logger.error(`[Dispatch] Failed to update ride ${rideId} status after dispatch error:`, saveErr);
     }
   } finally {
     // --- Clean up Dispatch Process ---
@@ -1266,77 +1264,77 @@ apiRouter.post('/requestRide', async (req, res) => {
   const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
 
   if (!token) {
-      logger.warn('[API] /api/requestRide: Missing or invalid Authorization header.');
-      return res.status(401).json({ error: 'Unauthorized', message: 'Authorization token is missing or invalid.' });
+    logger.warn('[API] /api/requestRide: Missing or invalid Authorization header.');
+    return res.status(401).json({ error: 'Unauthorized', message: 'Authorization token is missing or invalid.' });
   }
 
-   // Validate rideData (similar to socket validation)
-    if (!rideData || !rideData.origin || !rideData.destination ||
-        typeof rideData.origin.latitude !== "number" || typeof rideData.origin.longitude !== "number" ||
-        typeof rideData.destination.latitude !== "number" || typeof rideData.destination.longitude !== "number") {
-      logger.warn(`[API] /api/requestRide: Invalid rideData received. Data: ${JSON.stringify(rideData)}`);
-      return res.status(400).json({ error: 'Bad Request', message: 'Invalid location data provided.' });
-    }
+  // Validate rideData (similar to socket validation)
+  if (!rideData || !rideData.origin || !rideData.destination ||
+    typeof rideData.origin.latitude !== "number" || typeof rideData.origin.longitude !== "number" ||
+    typeof rideData.destination.latitude !== "number" || typeof rideData.destination.longitude !== "number") {
+    logger.warn(`[API] /api/requestRide: Invalid rideData received. Data: ${JSON.stringify(rideData)}`);
+    return res.status(400).json({ error: 'Bad Request', message: 'Invalid location data provided.' });
+  }
 
 
   try {
-      // Verify JWT token
-      jwt.verify(token, process.env.JWT_SECRET || "kishan sheth super secret key", async (err, decoded) => {
-        if (err) {
-          logger.warn(`[API] /api/requestRide: JWT verification failed. Error: ${err.message}`);
-          return res.status(401).json({ error: 'Unauthorized', message: 'Invalid or expired token.' });
-        }
+    // Verify JWT token
+    jwt.verify(token, process.env.JWT_SECRET || "kishan sheth super secret key", async (err, decoded) => {
+      if (err) {
+        logger.warn(`[API] /api/requestRide: JWT verification failed. Error: ${err.message}`);
+        return res.status(401).json({ error: 'Unauthorized', message: 'Invalid or expired token.' });
+      }
 
-        const customerId = decoded.id;
-        logger.info(`[API] /api/requestRide: Token verified for customer ${customerId}.`);
+      const customerId = decoded.id;
+      logger.info(`[API] /api/requestRide: Token verified for customer ${customerId}.`);
 
-         // Check if customer already has an active ride
-          const existingRide = await Ride.findOne({
-            passenger: customerId,
-            status: { $in: ['requested', 'accepted', 'arrived', 'onRide'] }
-          });
+      // Check if customer already has an active ride
+      const existingRide = await Ride.findOne({
+        passenger: customerId,
+        status: { $in: ['requested', 'accepted', 'arrived', 'onRide'] }
+      });
 
-          if (existingRide) {
-              logger.warn(`[API] Customer ${customerId} attempted API ride request while ride ${existingRide._id} is active (status: ${existingRide.status}).`);
-              return res.status(409).json({ error: 'Conflict', message: `You already have an active ride (Status: ${existingRide.status}).` });
-          }
+      if (existingRide) {
+        logger.warn(`[API] Customer ${customerId} attempted API ride request while ride ${existingRide._id} is active (status: ${existingRide.status}).`);
+        return res.status(409).json({ error: 'Conflict', message: `You already have an active ride (Status: ${existingRide.status}).` });
+      }
 
-          // Create a new ride instance
-          logger.info(`[API] Creating ride via API for customer ${customerId}.`);
-          const newRide = new Ride({
-              passenger: customerId,
-              driver: null,
-              pickupLocation: {
-                  type: 'Point',
-                  coordinates: [rideData.origin.longitude, rideData.origin.latitude],
-              },
-              dropoffLocation: {
-                  type: 'Point',
-                  coordinates: [rideData.destination.longitude, rideData.destination.latitude],
-              },
-              fare: {
-                  amount: rideData.fareAmount || 6000, // Use provided or default
-                  currency: "IQD",
-              },
-              distance: rideData.distance,
-              duration: rideData.duration,
-              status: "requested",
-              isDispatching: true, // Mark for dispatch
-              notified: false,
-          });
+      // Create a new ride instance
+      logger.info(`[API] Creating ride via API for customer ${customerId}.`);
+      const newRide = new Ride({
+        passenger: customerId,
+        driver: null,
+        pickupLocation: {
+          type: 'Point',
+          coordinates: [rideData.origin.longitude, rideData.origin.latitude],
+        },
+        dropoffLocation: {
+          type: 'Point',
+          coordinates: [rideData.destination.longitude, rideData.destination.latitude],
+        },
+        fare: {
+          amount: rideData.fareAmount || 6000, // Use provided or default
+          currency: "IQD",
+        },
+        distance: rideData.distance,
+        duration: rideData.duration,
+        status: "requested",
+        isDispatching: true, // Mark for dispatch
+        notified: false,
+      });
 
-          // Save the new ride to MongoDB
-          await newRide.save();
-          logger.info(`[DB] Ride ${newRide._id} created successfully via API for customer ${customerId}.`);
+      // Save the new ride to MongoDB
+      await newRide.save();
+      logger.info(`[DB] Ride ${newRide._id} created successfully via API for customer ${customerId}.`);
 
-          // Start the dispatch process (async, don't wait for it to finish)
-          dispatchRide(newRide, rideData.origin);
-          logger.info(`[Dispatch] Initiated dispatch for API-requested ride ${newRide._id}.`);
+      // Start the dispatch process (async, don't wait for it to finish)
+      dispatchRide(newRide, rideData.origin);
+      logger.info(`[Dispatch] Initiated dispatch for API-requested ride ${newRide._id}.`);
 
-          // Respond to the API client
-          res.status(201).json({ message: 'Ride requested successfully. Searching for captains.', rideId: newRide._id });
+      // Respond to the API client
+      res.status(201).json({ message: 'Ride requested successfully. Searching for captains.', rideId: newRide._id });
 
-      }); // End JWT verify callback
+    }); // End JWT verify callback
   } catch (err) {
     logger.error("[API] /api/requestRide: Error processing request:", err);
     res.status(500).json({ error: 'Internal Server Error', message: 'Failed to create ride due to a server issue.' });
@@ -1352,25 +1350,25 @@ logger.info('[System] Mounted API router at /api.');
 SystemSetting.countDocuments()
   .then((count) => {
     if (count === 0) {
-        logger.warn("[DB] No SystemSetting document found. Creating default.");
-        const systemSetting = new SystemSetting({
-            name: "main",
-            screenImg: "img/background.png",
-            // Add other default settings: base_fare, price_per_km, etc.
-            baseFare: 3000,
-            pricePerKm: 500,
-            currency: "IQD",
-        });
-        return systemSetting.save();
+      logger.warn("[DB] No SystemSetting document found. Creating default.");
+      const systemSetting = new SystemSetting({
+        name: "main",
+        screenImg: "img/background.png",
+        // Add other default settings: base_fare, price_per_km, etc.
+        baseFare: 3000,
+        pricePerKm: 500,
+        currency: "IQD",
+      });
+      return systemSetting.save();
     } else {
-        logger.info("[DB] SystemSetting document(s) found.");
-        return null; // Return null promise if no save needed
+      logger.info("[DB] SystemSetting document(s) found.");
+      return null; // Return null promise if no save needed
     }
   })
   .then((savedSetting) => {
-      if(savedSetting) {
-          logger.info("[DB] Default SystemSetting document created successfully.");
-      }
+    if (savedSetting) {
+      logger.info("[DB] Default SystemSetting document created successfully.");
+    }
   })
   .catch((err) =>
     logger.error("[DB] Error checking or creating SystemSetting document:", err)
@@ -1388,32 +1386,32 @@ setInterval(async () => {
   try {
     // Find rides that are 'requested' but NOT currently being handled by an active dispatch process
     const ridesToDispatch = await Ride.find({
-        status: 'requested',
-        _id: { $nin: Array.from(dispatchProcesses.keys()) } // Find rides not in the active dispatch map
+      status: 'requested',
+      _id: { $nin: Array.from(dispatchProcesses.keys()) } // Find rides not in the active dispatch map
     });
 
     if (ridesToDispatch.length > 0) {
-        logger.info(`[Dispatch Interval] Found ${ridesToDispatch.length} requested rides potentially needing dispatch: ${ridesToDispatch.map(r => r._id).join(', ')}`);
-        for (const ride of ridesToDispatch) {
-            // Double check if a process was somehow created just now
-            if (dispatchProcesses.has(ride._id.toString())) {
-                logger.warn(`[Dispatch Interval] Dispatch process for ride ${ride._id} already exists. Skipping.`);
-                continue;
-            }
-
-            logger.info(`[Dispatch Interval] Initiating dispatch for ride ${ride._id}`);
-            // It's generally safer to let dispatchRide manage the 'isDispatching' flag.
-            // ride.isDispatching = true; // Mark it here if needed, but dispatchRide should handle it
-            // await ride.save();
-
-            const originCoords = {
-                latitude: ride.pickupLocation.coordinates[1],
-                longitude: ride.pickupLocation.coordinates[0],
-            };
-            dispatchRide(ride, originCoords); // Start dispatch
+      logger.info(`[Dispatch Interval] Found ${ridesToDispatch.length} requested rides potentially needing dispatch: ${ridesToDispatch.map(r => r._id).join(', ')}`);
+      for (const ride of ridesToDispatch) {
+        // Double check if a process was somehow created just now
+        if (dispatchProcesses.has(ride._id.toString())) {
+          logger.warn(`[Dispatch Interval] Dispatch process for ride ${ride._id} already exists. Skipping.`);
+          continue;
         }
+
+        logger.info(`[Dispatch Interval] Initiating dispatch for ride ${ride._id}`);
+        // It's generally safer to let dispatchRide manage the 'isDispatching' flag.
+        // ride.isDispatching = true; // Mark it here if needed, but dispatchRide should handle it
+        // await ride.save();
+
+        const originCoords = {
+          latitude: ride.pickupLocation.coordinates[1],
+          longitude: ride.pickupLocation.coordinates[0],
+        };
+        dispatchRide(ride, originCoords); // Start dispatch
+      }
     } else {
-         logger.debug('[Dispatch Interval] No requested rides found needing dispatch initiation.');
+      logger.debug('[Dispatch Interval] No requested rides found needing dispatch initiation.');
     }
   } catch (err) {
     logger.error("[Dispatch Interval] Error checking for dispatchable rides:", err);
@@ -1423,20 +1421,20 @@ setInterval(async () => {
 
 // --- Global Error Handling Middleware (Last Middleware) ---
 app.use((err, req, res, next) => {
-    logger.error('[Express Error Handler] Unhandled error:', {
-        message: err.message,
-        stack: err.stack,
-        url: req.originalUrl,
-        method: req.method,
-        ip: req.ip,
-    });
+  logger.error('[Express Error Handler] Unhandled error:', {
+    message: err.message,
+    stack: err.stack,
+    url: req.originalUrl,
+    method: req.method,
+    ip: req.ip,
+  });
 
-    // Avoid sending stack trace in production
-    const statusCode = err.status || 500;
-    res.status(statusCode).json({
-        error: 'Internal Server Error',
-        message: process.env.NODE_ENV === 'production' ? 'An unexpected error occurred.' : err.message,
-    });
+  // Avoid sending stack trace in production
+  const statusCode = err.status || 500;
+  res.status(statusCode).json({
+    error: 'Internal Server Error',
+    message: process.env.NODE_ENV === 'production' ? 'An unexpected error occurred.' : err.message,
+  });
 });
 
 
@@ -1449,45 +1447,45 @@ server.listen(PORT, () => {
 // --- Graceful Shutdown ---
 const signals = ['SIGINT', 'SIGTERM', 'SIGQUIT'];
 signals.forEach(signal => {
-    process.on(signal, async () => {
-        logger.warn(`[System] Received ${signal}. Shutting down gracefully...`);
-        // 1. Stop accepting new connections (server.close does this)
-        server.close(async (err) => {
-            if (err) {
-                logger.error('[System] Error closing HTTP server:', err);
-                process.exit(1); // Force exit if server close fails
-            }
-            logger.info('[System] HTTP server closed.');
+  process.on(signal, async () => {
+    logger.warn(`[System] Received ${signal}. Shutting down gracefully...`);
+    // 1. Stop accepting new connections (server.close does this)
+    server.close(async (err) => {
+      if (err) {
+        logger.error('[System] Error closing HTTP server:', err);
+        process.exit(1); // Force exit if server close fails
+      }
+      logger.info('[System] HTTP server closed.');
 
-            // 2. Close Socket.IO connections
-             logger.info('[System] Closing Socket.IO connections...');
-             io.close((err) => {
-                 if (err) {
-                     logger.error('[System] Error closing Socket.IO:', err);
-                 } else {
-                     logger.info('[System] Socket.IO connections closed.');
-                 }
+      // 2. Close Socket.IO connections
+      logger.info('[System] Closing Socket.IO connections...');
+      io.close((err) => {
+        if (err) {
+          logger.error('[System] Error closing Socket.IO:', err);
+        } else {
+          logger.info('[System] Socket.IO connections closed.');
+        }
 
-                 // 3. Close Redis connection
-                 logger.info('[System] Closing Redis connection...');
-                 redisClient.quit()
-                    .then(() => logger.info('[Redis] Redis client quit successfully.'))
-                    .catch(redisErr => logger.error('[Redis] Error quitting Redis client:', redisErr))
-                    .finally(() => {
-                        // 4. Close Database connection (if mongoose connection is accessible)
-                        // require('./config/database').closeConnection(); // Assuming you have a close function
-                        logger.info('[System] Database connection should be closed here if managed.');
+        // 3. Close Redis connection
+        logger.info('[System] Closing Redis connection...');
+        redisClient.quit()
+          .then(() => logger.info('[Redis] Redis client quit successfully.'))
+          .catch(redisErr => logger.error('[Redis] Error quitting Redis client:', redisErr))
+          .finally(() => {
+            // 4. Close Database connection (if mongoose connection is accessible)
+            // require('./config/database').closeConnection(); // Assuming you have a close function
+            logger.info('[System] Database connection should be closed here if managed.');
 
-                        logger.info('[System] Graceful shutdown complete.');
-                        process.exit(0); // Exit successfully
-                    });
-             });
-        });
-
-        // Force shutdown after a timeout if graceful shutdown hangs
-        setTimeout(() => {
-            logger.error('[System] Graceful shutdown timed out. Forcing exit.');
-            process.exit(1);
-        }, 10000); // 10 seconds timeout
+            logger.info('[System] Graceful shutdown complete.');
+            process.exit(0); // Exit successfully
+          });
+      });
     });
+
+    // Force shutdown after a timeout if graceful shutdown hangs
+    setTimeout(() => {
+      logger.error('[System] Graceful shutdown timed out. Forcing exit.');
+      process.exit(1);
+    }, 10000); // 10 seconds timeout
+  });
 });

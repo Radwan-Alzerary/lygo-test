@@ -155,6 +155,7 @@ module.exports.registerPhoneNumber = async (req, res, next) => {
 module.exports.verifyOtp = async (req, res, next) => {
   try {
     const { phoneNumber, otp } = req.body;
+    console.log(req.body)
     if (!phoneNumber || !otp) {
       return res
         .status(400)

@@ -21,4 +21,9 @@ router.get("/delete-account/verify", (req, res) => {
 });
 router.post("/delete-account/verify", require("../controllers/customerControllers").verifyDeletionOtp);
 
+
+
+
+
+
 module.exports = router;

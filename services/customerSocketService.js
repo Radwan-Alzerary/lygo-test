@@ -13,7 +13,6 @@ class CustomerSocketService {
     this.rideSharingMap = dependencies.rideSharingMap;
     this.dispatchRide = dependencies.dispatchRide;
     this.calculateDistance = dependencies.calculateDistance;
-    
     this.customerNamespace = null;
     this.rideSettings = null; // Cache for ride settings
   }
@@ -21,7 +20,7 @@ class CustomerSocketService {
   async initialize() {
     // Load ride settings
     await this.loadRideSettings();
-    
+
     // Customer Namespace
     this.customerNamespace = this.io.of("/customer");
     this.customerNamespace.on("connection", (socket) => this.handleConnection(socket));
@@ -78,33 +77,78 @@ class CustomerSocketService {
     }
 
     // Verify JWT token
-    jwt.verify(token, process.env.JWT_SECRET || "kishan sheth super secret key", async (err, decoded) => {
-      if (err) {
-        this.logger.warn(`[Socket.IO Customer] JWT verification failed for token: ${token}. Error: ${err.message}. Socket ID: ${socket.id}. Disconnecting.`);
-        socket.disconnect(true);
-      } else {
-        await this.handleAuthenticated(socket, decoded);
+
+    // داخل handleConnection بعد استخراج token
+    jwt.verify(
+      token,
+      process.env.JWT_SECRET || "kishan sheth super secret key",
+      async (err, decoded) => {
+        if (err) {
+          this.logger.warn(
+            `[Socket.IO Customer] JWT verification failed for token: ${token}. Error: ${err.message}. Socket ID: ${socket.id}. Disconnecting.`
+          );
+          socket.disconnect(true);
+          return;
+        }
+
+        // ✅ تحقّق من أن الحساب موجود ومفعّل قبل المتابعة
+        try {
+          const customer = await Customer.findById(decoded.id).select(
+            "isActive isBlocked"
+          );
+
+          if (!customer) {
+            this.logger.warn(
+              `[Socket.IO Customer] Customer ${decoded.id} not found in DB. Disconnecting socket ${socket.id}.`
+            );
+            socket.emit("authError", { message: "Account not found." });
+            socket.disconnect(true);
+            return;
+          }
+
+          if (!customer.isActive) {
+            this.logger.warn(
+              `[Socket.IO Customer] Customer ${decoded.id} account inactive. Disconnecting socket ${socket.id}.`
+            );
+            socket.emit("authError", { message: "Account is inactive." });
+            socket.disconnect(true);
+            return;
+          }
+
+          // كل شيء سليم – تابع المنطق الاعتيادي
+          await this.handleAuthenticated(socket, decoded);
+        } catch (dbErr) {
+          this.logger.error(
+            `[Socket.IO Customer] DB error while checking customer ${decoded.id}:`,
+            dbErr
+          );
+          socket.disconnect(true);
+        }
       }
-    });
+    );
+
+
+
+
   }
 
   async handleAuthenticated(socket, decoded) {
     const customerId = decoded.id;
-    
+
     // Validate customer eligibility based on rules
     const isEligible = await this.validateCustomerEligibility(customerId);
     if (!isEligible.eligible) {
       this.logger.warn(`[Socket.IO Customer] Customer ${customerId} not eligible: ${isEligible.reason}`);
-      socket.emit("eligibilityError", { 
+      socket.emit("eligibilityError", {
         message: isEligible.reason,
         requiredRating: this.rideSettings.passengerRules.minRatingRequired
       });
       socket.disconnect(true);
       return;
     }
-    
+
     const oldSocketId = this.onlineCustomers[customerId];
-    
+
     if (oldSocketId && oldSocketId !== socket.id) {
       this.logger.warn(`[Socket.IO Customer] Customer ${customerId} already connected with socket ${oldSocketId}. Disconnecting old socket.`);
       const oldSocket = this.customerNamespace.sockets.get(oldSocketId);
@@ -112,7 +156,7 @@ class CustomerSocketService {
         oldSocket.disconnect(true);
       }
     }
-    
+
     this.onlineCustomers[customerId] = socket.id;
     this.logger.info(`[Socket.IO Customer] Customer ${customerId} successfully connected. Socket ID: ${socket.id}`);
     this.logger.debug(`[State] Online customers: ${JSON.stringify(this.onlineCustomers)}`);
@@ -149,9 +193,9 @@ class CustomerSocketService {
 
       // Check minimum rating
       if (customer.rating < this.rideSettings.passengerRules.minRatingRequired) {
-        return { 
-          eligible: false, 
-          reason: `Minimum rating required: ${this.rideSettings.passengerRules.minRatingRequired}. Current: ${customer.rating}` 
+        return {
+          eligible: false,
+          reason: `Minimum rating required: ${this.rideSettings.passengerRules.minRatingRequired}. Current: ${customer.rating}`
         };
       }
 
@@ -175,7 +219,7 @@ class CustomerSocketService {
       for (const ride of rides) {
         this.logger.info(`[Socket.IO Customer] Processing ride ${ride._id} with status ${ride.status} for customer ${customerId}`);
         let captainInfo = null;
-        
+
         if (ride.driver && ride.status !== 'requested' && ride.status !== 'notApprove' && ride.status !== 'cancelled') {
           captainInfo = ride.driver ? {
             name: ride.driver.name,
@@ -193,7 +237,7 @@ class CustomerSocketService {
 
   emitRideStatus(socket, ride, captainInfo) {
     const rideId = ride._id;
-    
+
     switch (ride.status) {
       case 'requested':
         this.logger.info(`[Socket.IO Customer] Emitting 'ridePending' for ride ${rideId}`);
@@ -307,7 +351,7 @@ class CustomerSocketService {
 
     try {
       const estimatedFare = this.calculateFare(data.distance, data.duration || 0);
-      
+
       socket.emit("fareEstimate", {
         baseFare: this.rideSettings.fare.baseFare,
         pricePerKm: this.rideSettings.fare.pricePerKm,
@@ -328,37 +372,37 @@ class CustomerSocketService {
 
   calculateFare(distanceKm, durationMinutes = 0) {
     let fare = this.rideSettings.fare.baseFare;
-    
+
     // Add distance cost
     fare += distanceKm * this.rideSettings.fare.pricePerKm;
-    
+
     // Add time cost if configured
     fare += durationMinutes * this.rideSettings.fare.pricePerMinute;
-    
+
     // Apply time-based multipliers
     const now = new Date();
     const hour = now.getHours();
     const isWeekend = now.getDay() === 0 || now.getDay() === 6;
-    
+
     // Night multiplier (assuming 10 PM to 6 AM is night)
     if (hour >= 22 || hour < 6) {
       fare *= this.rideSettings.fare.nightMultiplier;
     }
-    
+
     // Weekend multiplier
     if (isWeekend) {
       fare *= this.rideSettings.fare.weekendMultiplier;
     }
-    
+
     // Apply surge pricing if active
     if (this.isSurgeActive()) {
       fare *= this.rideSettings.fare.surge.multiplier;
     }
-    
+
     // Ensure fare is within bounds
     fare = Math.max(this.rideSettings.fare.minRidePrice, fare);
     fare = Math.min(this.rideSettings.fare.maxRidePrice, fare);
-    
+
     return Math.round(fare);
   }
 
@@ -366,15 +410,15 @@ class CustomerSocketService {
     if (!this.rideSettings.fare.surge.enabled) {
       return false;
     }
-    
+
     const now = new Date();
     const surgeStart = this.rideSettings.fare.surge.activeFrom;
     const surgeEnd = this.rideSettings.fare.surge.activeTo;
-    
+
     if (surgeStart && surgeEnd) {
       return now >= surgeStart && now <= surgeEnd;
     }
-    
+
     // If no time window specified, surge is always active when enabled
     return true;
   }
@@ -384,8 +428,8 @@ class CustomerSocketService {
 
     // Basic validation
     if (!rideData || !rideData.origin || !rideData.destination ||
-        typeof rideData.origin.latitude !== "number" || typeof rideData.origin.longitude !== "number" ||
-        typeof rideData.destination.latitude !== "number" || typeof rideData.destination.longitude !== "number") {
+      typeof rideData.origin.latitude !== "number" || typeof rideData.origin.longitude !== "number" ||
+      typeof rideData.destination.latitude !== "number" || typeof rideData.destination.longitude !== "number") {
       this.logger.warn(`[Socket.IO Customer] Invalid rideData received from customer ${customerId}. Data: ${JSON.stringify(rideData)}`);
       socket.emit("rideError", { message: "Invalid location data provided. Please try again." });
       return;
@@ -394,8 +438,8 @@ class CustomerSocketService {
     // Validate payment method
     if (rideData.paymentMethod && !this.rideSettings.paymentMethods.includes(rideData.paymentMethod)) {
       this.logger.warn(`[Socket.IO Customer] Invalid payment method ${rideData.paymentMethod} from customer ${customerId}`);
-      socket.emit("rideError", { 
-        message: `Payment method not supported. Available: ${this.rideSettings.paymentMethods.join(', ')}` 
+      socket.emit("rideError", {
+        message: `Payment method not supported. Available: ${this.rideSettings.paymentMethods.join(', ')}`
       });
       return;
     }
@@ -419,7 +463,7 @@ class CustomerSocketService {
       const calculatedFare = this.calculateFare(distance, duration);
 
       this.logger.info(`[Socket.IO Customer] Creating new ride for customer ${customerId}. Calculated fare: ${calculatedFare} ${this.rideSettings.fare.currency}`);
-      
+
       const newRide = new Ride({
         passenger: customerId,
         driver: null,
@@ -499,7 +543,7 @@ class CustomerSocketService {
       const createdAt = new Date(ride.createdAt);
       const now = new Date();
       const timeDifference = (now - createdAt) / 1000; // seconds
-      
+
       let cancellationFee = 0;
       if (timeDifference > this.rideSettings.passengerRules.freeCancelWindow) {
         cancellationFee = this.rideSettings.passengerRules.cancellationFee;
@@ -508,7 +552,7 @@ class CustomerSocketService {
       }
 
       this.logger.info(`[DB] Updating ride ${rideId} status to 'cancelled' due to customer cancellation. Fee: ${cancellationFee}`);
-      
+
       ride.status = "cancelled";
       ride.isDispatching = false;
       ride.cancellationReason = `Cancelled by customer ${customerId}`;
@@ -531,8 +575,8 @@ class CustomerSocketService {
       }
 
       // Confirm cancellation to customer
-      socket.emit("rideCancelledConfirmation", { 
-        rideId: ride._id, 
+      socket.emit("rideCancelledConfirmation", {
+        rideId: ride._id,
         message: "Ride successfully cancelled.",
         cancellationFee: cancellationFee,
         currency: this.rideSettings.fare.currency
@@ -546,7 +590,7 @@ class CustomerSocketService {
 
   handleDisconnect(socket, customerId, reason) {
     this.logger.info(`[Socket.IO Customer] Customer ${customerId} disconnected. Socket ID: ${socket.id}. Reason: ${reason}`);
-    
+
     // Clean up: Find the customerId associated with this socket.id and remove it
     for (let id in this.onlineCustomers) {
       if (this.onlineCustomers[id] === socket.id) {
@@ -575,8 +619,8 @@ class CustomerSocketService {
 
   // Method to validate if fare is within bounds
   validateFareInBounds(fareAmount) {
-    return fareAmount >= this.rideSettings.fare.minRidePrice && 
-           fareAmount <= this.rideSettings.fare.maxRidePrice;
+    return fareAmount >= this.rideSettings.fare.minRidePrice &&
+      fareAmount <= this.rideSettings.fare.maxRidePrice;
   }
 }
 

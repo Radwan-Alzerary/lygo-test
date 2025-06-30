@@ -24,6 +24,10 @@ const userSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: "FinancialAccount",
   },
+  notifyToken: {
+    type: String,
+    default: "",
+  },
 });
 
 userSchema.pre("save", async function (next) {

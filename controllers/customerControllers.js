@@ -1,9 +1,9 @@
 // controllers/authController.js
-const Customer         = require("../model/customer");
+const Customer = require("../model/customer");
 const FinancialAccount = require("../model/financialAccount");
 const { handleErrors } = require("../utils/errorHandler");
-const axios            = require("axios");
-const jwt              = require("jsonwebtoken");
+const axios = require("axios");
+const jwt = require("jsonwebtoken");
 
 const OTP_SERVER_URL = process.env.OTP_SERVER_URL || "https://otp.niuraiq.com";
 
@@ -110,6 +110,7 @@ module.exports.verifyDeletionOtp = async (req, res, next) => {
 module.exports.registerPhoneNumber = async (req, res, next) => {
   try {
     const { phoneNumber } = req.body;
+    console.log(req.body)
     if (!phoneNumber) {
       return res
         .status(400)
@@ -124,16 +125,20 @@ module.exports.registerPhoneNumber = async (req, res, next) => {
 
       customer = new Customer({
         phoneNumber,
-        project:"lygo",
+        project: "lygo",
+        notifyToken: req.body.pushToken,
         financialAccount: financialAccount._id,
       });
       await customer.save();
-    }
+    } else {
+      customer.notifyToken = req.body.pushToken || "";
+      await customer.save();
 
+    }
     // 2) call OTP server
     const otpRes = await axios.post(`${OTP_SERVER_URL}/otp/send`, {
       phone: phoneNumber,
-      project:"lygo",
+      project: "lygo",
     });
 
     if (otpRes.data && otpRes.data.success) {

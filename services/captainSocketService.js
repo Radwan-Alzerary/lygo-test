@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const Ride = require("../model/ride");
 const Captain = require("../model/Driver");
+const RideSetting = require("../model/rideSetting"); // Add RideSetting import
 
 class CaptainSocketService {
   constructor(io, logger, dependencies) {
@@ -13,16 +14,59 @@ class CaptainSocketService {
     this.redisClient = dependencies.redisClient;
     this.calculateDistance = dependencies.calculateDistance;
     this.dispatchRide = dependencies.dispatchRide;
-    this.customerSocketService = dependencies.customerSocketService; // Reference to customer service for cross-communication
+    this.customerSocketService = dependencies.customerSocketService;
     
     this.captainNamespace = null;
+    this.rideSettings = null; // Cache for ride settings
   }
 
-  initialize() {
+  async initialize() {
+    // Load ride settings
+    await this.loadRideSettings();
+    
     // Captain Namespace
     this.captainNamespace = this.io.of("/captain");
     this.captainNamespace.on("connection", (socket) => this.handleConnection(socket));
     this.logger.info('[CaptainSocketService] Captain namespace initialized.');
+  }
+
+  async loadRideSettings() {
+    try {
+      this.rideSettings = await RideSetting.findOne({ name: "default" });
+      if (!this.rideSettings) {
+        // Create default settings if none exist
+        this.rideSettings = new RideSetting({});
+        await this.rideSettings.save();
+        this.logger.info('[CaptainSocketService] Created default ride settings.');
+      }
+      this.logger.info('[CaptainSocketService] Ride settings loaded successfully.');
+    } catch (err) {
+      this.logger.error('[CaptainSocketService] Error loading ride settings:', err);
+      // Use default values if DB fails
+      this.rideSettings = {
+        dispatch: {
+          initialRadiusKm: 2,
+          maxRadiusKm: 10,
+          radiusIncrementKm: 1,
+          notificationTimeout: 15,
+          maxDispatchTime: 300,
+          graceAfterMaxRadius: 30
+        },
+        captainRules: {
+          maxTopUpLimit: 1000,
+          minWalletBalance: 0,
+          minRating: 3.5,
+          maxActiveRides: 1
+        },
+        fare: {
+          currency: "IQD",
+          baseFare: 3000,
+          pricePerKm: 500,
+          minRidePrice: 2000,
+          maxRidePrice: 7000
+        }
+      };
+    }
   }
 
   handleConnection(socket) {
@@ -48,6 +92,20 @@ class CaptainSocketService {
 
   async handleAuthenticated(socket, decoded) {
     const captainId = decoded.id;
+    
+    // Validate captain eligibility based on rules
+    const isEligible = await this.validateCaptainEligibility(captainId);
+    if (!isEligible.eligible) {
+      this.logger.warn(`[Socket.IO Captain] Captain ${captainId} not eligible: ${isEligible.reason}`);
+      socket.emit("eligibilityError", { 
+        message: isEligible.reason,
+        requiredRating: this.rideSettings.captainRules.minRating,
+        minBalance: this.rideSettings.captainRules.minWalletBalance
+      });
+      socket.disconnect(true);
+      return;
+    }
+
     const oldSocketId = this.onlineCaptains[captainId];
     
     if (oldSocketId && oldSocketId !== socket.id) {
@@ -62,11 +120,61 @@ class CaptainSocketService {
     this.logger.info(`[Socket.IO Captain] Captain ${captainId} successfully connected. Socket ID: ${socket.id}`);
     this.logger.debug(`[State] Online captains: ${JSON.stringify(this.onlineCaptains)}`);
 
+    // Send current settings to captain
+    socket.emit("rideSettings", {
+      fare: this.rideSettings.fare,
+      paymentMethods: this.rideSettings.paymentMethods,
+      allowShared: this.rideSettings.allowShared
+    });
+
     // Restore captain state on connection
     await this.restoreCaptainState(socket, captainId);
 
     // Setup event listeners
     this.setupEventListeners(socket, captainId);
+  }
+
+  async validateCaptainEligibility(captainId) {
+    try {
+      const captain = await Captain.findById(captainId).select('rating walletBalance');
+      if (!captain) {
+        return { eligible: false, reason: "Captain not found" };
+      }
+
+      // Check minimum rating
+      if (captain.rating < this.rideSettings.captainRules.minRating) {
+        return { 
+          eligible: false, 
+          reason: `Minimum rating required: ${this.rideSettings.captainRules.minRating}. Current: ${captain.rating}` 
+        };
+      }
+
+      // Check minimum wallet balance
+      if (captain.walletBalance < this.rideSettings.captainRules.minWalletBalance) {
+        return { 
+          eligible: false, 
+          reason: `Minimum wallet balance required: ${this.rideSettings.captainRules.minWalletBalance} ${this.rideSettings.fare.currency}` 
+        };
+      }
+
+      // Check maximum active rides
+      const activeRides = await Ride.countDocuments({
+        driver: captainId,
+        status: { $in: ['accepted', 'arrived', 'onRide'] }
+      });
+
+      if (activeRides >= this.rideSettings.captainRules.maxActiveRides) {
+        return { 
+          eligible: false, 
+          reason: `Maximum active rides limit reached: ${this.rideSettings.captainRules.maxActiveRides}` 
+        };
+      }
+
+      return { eligible: true };
+    } catch (err) {
+      this.logger.error(`[CaptainSocketService] Error validating captain eligibility for ${captainId}:`, err);
+      return { eligible: false, reason: "Validation error" };
+    }
   }
 
   async restoreCaptainState(socket, captainId) {
@@ -125,7 +233,10 @@ class CaptainSocketService {
         const pendingRides = await Ride.find({ status: "requested" });
         this.logger.info(`[DB] Found ${pendingRides.length} rides with status 'requested'. Checking proximity for captain ${captainId}.`);
 
+        // Use notification radius from dispatch settings
+        const notificationRadius = this.rideSettings.dispatch.initialRadiusKm;
         let notifiedRideCount = 0;
+        
         for (let ride of pendingRides) {
           const distance = this.calculateDistance(
             { latitude, longitude },
@@ -135,18 +246,22 @@ class CaptainSocketService {
             }
           );
           
-          const notificationRadius = 10; // km
           if (distance <= notificationRadius) {
-            notifiedRideCount++;
-            this.logger.info(`[Socket.IO Captain] Ride ${ride._id} is within ${notificationRadius}km (${distance.toFixed(2)}km). Emitting 'newRide' to captain ${captainId}`);
-            socket.emit("newRide", {
-              rideId: ride._id,
-              pickupLocation: ride.pickupLocation.coordinates,
-              dropoffLocation: ride.dropoffLocation.coordinates,
-              fare: ride.fare.amount,
-              distance: ride.distance,
-              duration: ride.duration,
-            });
+            // Validate fare bounds before notifying
+            if (this.validateFareInBounds(ride.fare.amount)) {
+              notifiedRideCount++;
+              this.logger.info(`[Socket.IO Captain] Ride ${ride._id} is within ${notificationRadius}km (${distance.toFixed(2)}km). Emitting 'newRide' to captain ${captainId}`);
+              socket.emit("newRide", {
+                rideId: ride._id,
+                pickupLocation: ride.pickupLocation.coordinates,
+                dropoffLocation: ride.dropoffLocation.coordinates,
+                fare: ride.fare.amount,
+                currency: this.rideSettings.fare.currency,
+                distance: ride.distance,
+                duration: ride.duration,
+                paymentMethod: ride.paymentMethod
+              });
+            }
           }
         }
         this.logger.info(`[Socket.IO Captain] Notified captain ${captainId} about ${notifiedRideCount} pending rides within ${notificationRadius}km.`);
@@ -156,6 +271,11 @@ class CaptainSocketService {
     } catch (geoErr) {
       this.logger.error(`[Redis] Error fetching captain ${captainId} location or checking pending rides:`, geoErr);
     }
+  }
+
+  validateFareInBounds(fareAmount) {
+    return fareAmount >= this.rideSettings.fare.minRidePrice && 
+           fareAmount <= this.rideSettings.fare.maxRidePrice;
   }
 
   setupEventListeners(socket, captainId) {
@@ -197,6 +317,16 @@ class CaptainSocketService {
     // Handle socket errors
     socket.on('error', (error) => {
       this.logger.error(`[Socket.IO Captain] Socket error for captain ${captainId} on socket ${socket.id}:`, error);
+    });
+
+    // Handle settings refresh request
+    socket.on("refreshSettings", async () => {
+      await this.loadRideSettings();
+      socket.emit("rideSettings", {
+        fare: this.rideSettings.fare,
+        paymentMethods: this.rideSettings.paymentMethods,
+        allowShared: this.rideSettings.allowShared
+      });
     });
   }
 
@@ -248,6 +378,14 @@ class CaptainSocketService {
     this.logger.info(`[Socket.IO Captain] Received 'acceptRide' for ride ${rideId} from captain ${captainId}. Socket ID: ${socket.id}`);
 
     try {
+      // Check captain eligibility before accepting ride
+      const eligibilityCheck = await this.validateCaptainEligibility(captainId);
+      if (!eligibilityCheck.eligible) {
+        this.logger.warn(`[Socket.IO Captain] Captain ${captainId} not eligible to accept ride: ${eligibilityCheck.reason}`);
+        socket.emit("rideError", { message: eligibilityCheck.reason, rideId: rideId });
+        return;
+      }
+
       const ride = await Ride.findOneAndUpdate(
         { _id: rideId, status: "requested" },
         {
@@ -261,6 +399,16 @@ class CaptainSocketService {
       ).populate('passenger', 'name phoneNumber');
 
       if (ride) {
+        // Validate payment method is allowed
+        if (!this.rideSettings.paymentMethods.includes(ride.paymentMethod)) {
+          this.logger.warn(`[Socket.IO Captain] Ride ${rideId} has unsupported payment method: ${ride.paymentMethod}`);
+          socket.emit("rideError", { 
+            message: `Payment method ${ride.paymentMethod} not supported. Allowed: ${this.rideSettings.paymentMethods.join(', ')}`,
+            rideId: rideId 
+          });
+          return;
+        }
+
         this.logger.info(`[DB] Ride ${rideId} successfully accepted by captain ${captainId}. Status updated to 'accepted'.`);
 
         // Stop dispatch process
@@ -318,6 +466,9 @@ class CaptainSocketService {
           status: ride.status,
           pickupLocation: ride.pickupLocation.coordinates,
           dropoffLocation: ride.dropoffLocation.coordinates,
+          fare: ride.fare.amount,
+          currency: this.rideSettings.fare.currency,
+          paymentMethod: ride.paymentMethod,
           passengerInfo: {
             id: ride.passenger._id,
             name: ride.passenger.name,
@@ -387,7 +538,7 @@ class CaptainSocketService {
       // Confirm cancellation to captain
       socket.emit("rideCancelledConfirmation", { rideId: ride._id, message: "Ride successfully cancelled." });
 
-      // Restart dispatch process
+      // Restart dispatch process with settings-based radius
       this.logger.info(`[Dispatch] Restarting dispatch process for cancelled ride ${rideId}`);
       const originCoords = {
         latitude: ride.pickupLocation.coordinates[1],
@@ -517,13 +668,16 @@ class CaptainSocketService {
           rideId: ride._id,
           message: "Your ride has been completed. Thank you for riding with us!",
           fare: ride.fare.amount,
+          currency: this.rideSettings.fare.currency,
         });
 
         // Confirm status update to captain
         socket.emit("rideStatusUpdate", {
           rideId: ride._id,
           status: "completed",
-          message: "Ride successfully completed."
+          message: "Ride successfully completed.",
+          fare: ride.fare.amount,
+          currency: this.rideSettings.fare.currency
         });
 
         // Clean up state
@@ -585,6 +739,28 @@ class CaptainSocketService {
       });
     }
     return results;
+  }
+
+  // Method to get current settings (for external use)
+  getCurrentSettings() {
+    return this.rideSettings;
+  }
+
+  // Method to apply surge pricing if enabled
+  applySurgePricing(baseFare) {
+    if (this.rideSettings.fare.surge.enabled) {
+      const now = new Date();
+      const surgeStart = this.rideSettings.fare.surge.activeFrom;
+      const surgeEnd = this.rideSettings.fare.surge.activeTo;
+      
+      if (surgeStart && surgeEnd && now >= surgeStart && now <= surgeEnd) {
+        return baseFare * this.rideSettings.fare.surge.multiplier;
+      } else if (!surgeStart && !surgeEnd) {
+        // Always active if no time window specified
+        return baseFare * this.rideSettings.fare.surge.multiplier;
+      }
+    }
+    return baseFare;
   }
 }
 

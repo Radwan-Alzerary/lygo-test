@@ -95,6 +95,139 @@ router.get('/verifyToken', verifyToken, async (req, res) => {
 });
 
 
+/* ─────────────────────── 1)  DRIVER  RATING  ────────────────────────────
+   Average & count of driverRating where it isn’t null.
+   ---------------------------------------------------------------------- */
+router.get('/rating', verifyToken, async (req, res) => {
+  try {
+    const driverId = new mongoose.Types.ObjectId(req.user.id);
+
+    const result = await Ride.aggregate([
+      { $match: { driver: driverId, driverRating: { $ne: null } } },
+      {
+        $group: {
+          _id           : null,
+          totalRatings  : { $sum: 1 },
+          averageRating : { $avg: '$driverRating' }
+        }
+      }
+    ]);
+
+    const stats = result[0] || { totalRatings: 0, averageRating: 0 };
+
+    res.json({
+      totalRatings  : stats.totalRatings,
+      averageRating : Number(stats.averageRating.toFixed(2))
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Rating aggregation failed' });
+  }
+});
+
+/* ─────────────────────── 2)  DRIVER ANALYSIS ────────────────────────────
+   Lifetime + current-week KPIs and recent rides.
+   ---------------------------------------------------------------------- */
+router.get('/analysis', verifyToken, async (req, res) => {
+  try {
+    const driverId = new mongoose.Types.ObjectId(req.user.id);
+
+    /* calculate start of “this week” (Saturday->Friday in Iraq) */
+    const weekStart = new Date();
+    weekStart.setHours(0,0,0,0);
+    // JS getDay(): 0=Sun … 6=Sat  →  shift so that Saturday is start
+    const diffToSat = (weekStart.getDay() + 1) % 7;
+    weekStart.setDate(weekStart.getDate() - diffToSat);
+
+    /* one pipeline that returns lifetime & weekly numbers */
+    const agg = await Ride.aggregate([
+      { $match: { driver: driverId, status: 'completed' } },
+      {
+        $facet: {
+          lifetime: [
+            {
+              $group: {
+                _id            : null,
+                totalRides     : { $sum: 1 },
+                totalEarnings  : { $sum: '$fare.amount' }
+              }
+            }
+          ],
+          weekly: [
+            { $match: { updatedAt: { $gte: weekStart } } },
+            {
+              $group: {
+                _id             : { $dayOfWeek: '$updatedAt' }, // 1=Sun … 7=Sat
+                rides           : { $sum: 1 },
+                earnings        : { $sum: '$fare.amount' }
+              }
+            }
+          ]
+        }
+      }
+    ]);
+
+    const lifetime = agg[0].lifetime[0] || { totalRides: 0, totalEarnings: 0 };
+    const weeklyRaw = agg[0].weekly;       // array of 0–6 items
+
+    /* Build weeklyAnalytics array Saturday→Friday (Arabic labels) */
+    const daysAR = ['السبت','الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة'];
+    const wkMap = Object.fromEntries(
+      weeklyRaw.map(d => [ (d._id % 7), d ])            // turn Sun=1..Sat=7 into 1..0
+    );
+    const weeklyAnalytics = daysAR.map((name, idx) => ({
+      day      : name,
+      rides    : wkMap[idx]?.rides    || 0,
+      earnings : wkMap[idx]?.earnings || 0
+    }));
+
+    /* extra numbers for “this week” cards */
+    const weeklyRides    = weeklyAnalytics.reduce((s,d)=>s+d.rides,0);
+    const weeklyEarnings = weeklyAnalytics.reduce((s,d)=>s+d.earnings,0);
+
+    /* completion / cancellation percentages */
+    const statuses = await Ride.aggregate([
+      { $match: { driver: driverId } },
+      { $group: { _id: '$status', count: { $sum: 1 } } }
+    ]);
+    const countObj     = Object.fromEntries(statuses.map(s=>[s._id,s.count]));
+    const completed    = countObj.completed || 0;
+    const cancelled    = (countObj.canceled || 0) + (countObj.cancelled || 0);
+    const totalDecided = completed + cancelled || 1;
+
+    /* recent 10 rides list */
+    const recent = await Ride.find({ driver: driverId, status:'completed' })
+                             .sort({ updatedAt: -1 })
+                             .limit(10)
+                             .lean()
+                             .select('pickupAddress dropoffAddress fare driverRating updatedAt');
+
+    res.json({
+      totalEarnings    : lifetime.totalEarnings,
+      weeklyEarnings,
+      totalRides       : lifetime.totalRides,
+      weeklyRides,
+      completionRate   : +((completed / totalDecided)*100).toFixed(1),
+      cancellationRate : +((cancelled / totalDecided)*100).toFixed(1),
+      weeklyAnalytics,
+      recentRides      : recent.map(r => ({
+        id     : r._id,
+        date   : r.updatedAt.toISOString().slice(0,10),
+        time   : r.updatedAt.toISOString().slice(11,16),
+        from   : r.pickupAddress,
+        to     : r.dropoffAddress,
+        rating : r.driverRating || 0,
+        fare   : r.fare.amount
+      }))
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Analysis aggregation failed' });
+  }
+});
+
+
 
 // GET /:id - Get single driver
 router.get('/:id', async (req, res) => {

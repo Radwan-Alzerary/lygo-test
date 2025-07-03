@@ -72,10 +72,13 @@ router.get('/', async (req, res) => {
 
 router.get('/api/verifyToken', verifyToken, async (req, res) => {
   try {
+    console.log("driver", req.user)
+
     const driver = await Driver.findById(req.user.id)
       .select('-password -__v')   // never expose the hash
       .lean();
-
+    console.log("driver", driver)
+    console.log("driver", req.user)
     if (!driver) {
       return res.status(404).json({ success: false, message: 'Driver not found' });
     }

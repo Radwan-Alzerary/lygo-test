@@ -32,19 +32,19 @@ class RideHailingApp {
     this.io = null;
     this.redisConfig = null;
     this.redisClient = null;
-    
+
     // Application state
     this.onlineCustomers = {}; // Map: customerId -> socketId
     this.onlineCaptains = {};  // Map: captainId -> socketId
     this.dispatchProcesses = new Map(); // Map: rideId -> cancelDispatchFunction
     this.rideSharingMap = new Map();   // Map: captainId -> customerId
-    
+
     // Services
     this.customerSocketService = null;
     this.captainSocketService = null;
     this.dispatchService = null;
     this.systemService = null;
-    
+
     this.logger.info('[System] RideHailingApp instance created.');
   }
 
@@ -52,30 +52,30 @@ class RideHailingApp {
     try {
       // Initialize Redis
       await this.initializeRedis();
-      
+
       // Setup Socket.IO
       this.setupSocketIO();
-      
+
       // Setup middleware
       this.setupMiddleware();
-      
+
       // Setup view engine
       this.setupViewEngine();
-      
+
       // Setup routes
       this.setupRoutes();
-      
+
       // Initialize services
       await this.initializeServices();
-      
+
       // Setup error handling
       this.setupErrorHandling();
-      
+
       // Initialize system settings
       await this.initializeSystemSettings();
-      
+
       this.logger.info('[System] Application initialization complete.');
-      
+
     } catch (error) {
       this.logger.error('[System] Failed to initialize application:', error);
       throw error;
@@ -116,51 +116,45 @@ class RideHailingApp {
   }
 
   async initializeServices() {
-    // Initialize system service
+    /* 1. حالة مشتركة واحدة */
     this.systemService = new SystemService(this.logger);
-    
-    // Prepare dependencies for socket services
-    const socketDependencies = {
+    await this.systemService.boot?.();     // إن كان لديه bootstrap اختياري
+
+    const shared = {
       onlineCustomers: this.onlineCustomers,
       onlineCaptains: this.onlineCaptains,
       dispatchProcesses: this.dispatchProcesses,
       rideSharingMap: this.rideSharingMap,
       redisClient: this.redisClient,
-      calculateDistance: calculateDistance
+      calculateDistance
     };
 
-    // Initialize customer socket service
-    this.customerSocketService = new CustomerSocketService(this.io, this.logger, socketDependencies);
-    this.customerSocketService.initialize();
+    /* 2. أنشئ Dispatcher أولاً */
+    this.dispatchService = new DispatchService(this.logger, shared);
 
-    // Add customer service reference to dependencies for captain service
-    socketDependencies.customerSocketService = this.customerSocketService;
+    /* 3. وفّر الدالة بعد عمل bind للسياق */
+    shared.dispatchRide = this.dispatchService.dispatchRide.bind(this.dispatchService);
 
-    // Initialize captain socket service
-    this.captainSocketService = new CaptainSocketService(this.io, this.logger, socketDependencies);
-    this.captainSocketService.initialize();
+    /* 4. أنشئ خدمات السوكت بالدالة الجاهزة */
+    this.customerSocketService = new CustomerSocketService(this.io, this.logger, shared);
+    await this.customerSocketService.initialize();        // <- من الأفضل await
+    shared.customerSocketService = this.customerSocketService;
 
-    // Initialize dispatch service with all dependencies
-    const dispatchDependencies = {
-      ...socketDependencies,
-      captainSocketService: this.captainSocketService,
-      customerSocketService: this.customerSocketService
-    };
-    
-    this.dispatchService = new DispatchService(this.logger, dispatchDependencies);
-    
-    // Add dispatch function to socket dependencies
-    socketDependencies.dispatchRide = (ride, origin) => this.dispatchService.dispatchRide(ride, origin);
+    this.captainSocketService = new CaptainSocketService(this.io, this.logger, shared);
+    await this.captainSocketService.initialize();
 
-    // Start background dispatcher
-    this.dispatchService.startBackgroundDispatcher();
-    
-    // Setup API routes with dispatch service
+    /* 5. عرّف الخدمات داخل الـ dispatcher إذا كان يحتاجها */
+    this.dispatchService.setSocketServices(
+      this.captainSocketService,
+      this.customerSocketService
+    );
+
+    /* 6. API + الخلفية */
     const apiRouter = createApiRoutes(this.logger, this.dispatchService);
-    this.app.use('/api', apiRouter);
-    this.logger.info('[System] Mounted API router at /api.');
+    this.app.use("/api", apiRouter);
 
-    this.logger.info('[System] All services initialized successfully.');
+    this.dispatchService.startBackgroundDispatcher();
+    this.logger.info("[System] All services initialized successfully.");
   }
 
   setupErrorHandling() {
@@ -177,14 +171,14 @@ class RideHailingApp {
 
   async start() {
     const PORT = process.env.PORT || 5230;
-    
+
     this.server.listen(PORT, () => {
       this.logger.info(`[System] Server listening on port ${PORT}`);
     });
-    
+
     // Setup graceful shutdown
     this.setupGracefulShutdown();
-    
+
     this.logger.info('[System] Application started successfully.');
   }
 }
@@ -192,7 +186,7 @@ class RideHailingApp {
 // Application entry point
 async function main() {
   const app = new RideHailingApp();
-  
+
   try {
     await app.initialize();
     await app.start();

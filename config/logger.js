@@ -20,8 +20,6 @@ const createLogger = () => {
         )
       }),
       // Log to a file
-      new winston.transports.File({ filename: 'app-error.log', level: 'error' }), // Log only errors to this file
-      new winston.transports.File({ filename: 'app-combined.log' }), // Log everything to this file
     ],
   });
 

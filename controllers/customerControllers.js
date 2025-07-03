@@ -126,15 +126,10 @@ module.exports.registerPhoneNumber = async (req, res, next) => {
       customer = new Customer({
         phoneNumber,
         project: "lygo",
-        notifyToken: req.body.pushToken,
         financialAccount: financialAccount._id,
       });
       await customer.save();
-    } else {
-      customer.notifyToken = req.body.pushToken || "";
-      await customer.save();
-
-    }
+    } 
     // 2) call OTP server
     const otpRes = await axios.post(`${OTP_SERVER_URL}/otp/send`, {
       phone: phoneNumber,
@@ -159,7 +154,7 @@ module.exports.registerPhoneNumber = async (req, res, next) => {
 
 module.exports.verifyOtp = async (req, res, next) => {
   try {
-    const { phoneNumber, otp } = req.body;
+    const { phoneNumber, otp,pushToken } = req.body;
     console.log(req.body)
     if (!phoneNumber || !otp) {
       return res
@@ -180,7 +175,7 @@ module.exports.verifyOtp = async (req, res, next) => {
       if (!customer) {
         return res.status(400).json({ message: "Customer not found" });
       }
-
+      customer.notifyToken = pushToken;
       const token = createToken(customer._id);
       res.cookie("jwt", token, {
         withCredentials: true,

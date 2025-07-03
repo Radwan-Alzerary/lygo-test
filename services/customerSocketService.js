@@ -19,6 +19,7 @@ class CustomerSocketService {
 
   async initialize() {
     // Load ride settings
+    console.log('[CustomerSocketService] Initializing ride settings...');
     await this.loadRideSettings();
 
     // Customer Namespace
@@ -93,6 +94,7 @@ class CustomerSocketService {
 
         // ✅ تحقّق من أن الحساب موجود ومفعّل قبل المتابعة
         try {
+          this.logger.warn(decoded.id)
           const customer = await Customer.findById(decoded.id).select(
             "isActive isBlocked"
           );
@@ -252,6 +254,7 @@ class CustomerSocketService {
           paymentMethod: ride.paymentMethod
         });
         break;
+
       case 'accepted':
         this.logger.info(`[Socket.IO Customer] Emitting 'rideAccepted' for ride ${rideId}`);
         socket.emit("rideAccepted", {
@@ -260,6 +263,7 @@ class CustomerSocketService {
           driverInfo: captainInfo,
         });
         break;
+
       case 'arrived':
         this.logger.info(`[Socket.IO Customer] Emitting 'driverArrived' for ride ${rideId}`);
         socket.emit("driverArrived", {
@@ -267,10 +271,12 @@ class CustomerSocketService {
           message: "Your captain has arrived.",
         });
         break;
+
       case 'onRide':
         this.logger.info(`[Socket.IO Customer] Emitting 'rideStarted' for ride ${rideId}`);
         socket.emit("rideStarted", { rideId: ride._id });
         break;
+
       case 'completed':
         this.logger.info(`[Socket.IO Customer] Emitting 'rideCompleted' for ride ${rideId}`);
         socket.emit("rideCompleted", {
@@ -280,6 +286,7 @@ class CustomerSocketService {
           currency: this.rideSettings.fare.currency
         });
         break;
+
       case 'notApprove':
         this.logger.info(`[Socket.IO Customer] Emitting 'rideNotApproved' for ride ${rideId}`);
         socket.emit("rideNotApproved", {
@@ -287,6 +294,7 @@ class CustomerSocketService {
           message: "We couldn't find a captain for your previous request.",
         });
         break;
+
       case 'cancelled':
         this.logger.info(`[Socket.IO Customer] Emitting 'rideCanceled' for ride ${rideId}`);
         socket.emit("rideCanceled", {
@@ -452,9 +460,8 @@ class CustomerSocketService {
       });
 
       if (existingRide) {
-        this.logger.warn(`[Socket.IO Customer] Customer ${customerId} attempted to request a ride while ride ${existingRide._id} is active (status: ${existingRide.status}).`);
-        socket.emit("rideError", { message: `You already have an active ride (Status: ${existingRide.status}). Please wait or cancel it.` });
-        return;
+        existingRide.status = "cancelled"; // Cancel existing ride}
+        await existingRide.save();
       }
 
       // Calculate fare based on settings
@@ -504,7 +511,7 @@ class CustomerSocketService {
       });
 
       // Start the dispatch process
-      this.logger.info(`[Dispatch] Starting dispatch process for ride ${newRide._id}`);
+      this.logger.info(`[Dispatch] Starting dispatch process for ride ${newRide._id, rideData.origin}`);
       this.dispatchRide(newRide, rideData.origin);
 
     } catch (err) {

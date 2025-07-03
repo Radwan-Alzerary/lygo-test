@@ -3,6 +3,8 @@ const router = express.Router();
 const Customer = require('../../model/customer');
 const MoneyTransfers = require('../../model/moneyTransfers');
 const { createFinancialAccount, updateBalance } = require('../../utils/routeHelpers');
+const { verifyToken } = require('../../middlewares/customerMiddlewareAyuth');
+const ride = require('../../model/ride');
 
 // GET / - Get all customers
 router.get('/', async (req, res) => {
@@ -76,6 +78,17 @@ router.get('/:id', async (req, res) => {
     };
 
     res.json(customerData);
+  } catch (error) {
+    console.error('Customer fetch error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+router.get('/myRides/getall',verifyToken, async (req, res) => {
+  try {
+   console.log("Fetching customer rides");
+   console.log(req.user);
+    const customer = await ride.find({passenger: req.user.id})
+    res.json(customer);
   } catch (error) {
     console.error('Customer fetch error:', error);
     res.status(500).json({ error: error.message });

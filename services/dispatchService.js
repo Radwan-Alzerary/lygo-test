@@ -8,14 +8,20 @@ class DispatchService {
     this.redisClient = dependencies.redisClient;
     this.onlineCaptains = dependencies.onlineCaptains;
     this.dispatchProcesses = dependencies.dispatchProcesses;
-    
+    /** حقن/تحديث خدمات السوكِت بعد إنشائها */
     // Socket services may be set later during initialization
     this.captainSocketService = dependencies.captainSocketService || null;
     this.customerSocketService = dependencies.customerSocketService || null;
-    
+
     this.rideSettings = null; // Cache for ride settings
     this.backgroundIntervalId = null; // To manage background dispatcher
   }
+  setSocketServices(captainSocketService, customerSocketService) {
+    this.captainSocketService = captainSocketService;
+    this.customerSocketService = customerSocketService;
+    this.logger.info('[DispatchService] Socket services injected.');
+  }
+
 
   async initialize() {
     // Load ride settings
@@ -64,33 +70,33 @@ class DispatchService {
 
   validateDispatchSettings() {
     const dispatch = this.rideSettings.dispatch;
-    
+
     // Validate radius settings
     if (dispatch.initialRadiusKm <= 0 || dispatch.maxRadiusKm <= 0 || dispatch.radiusIncrementKm <= 0) {
       this.logger.error('[DispatchService] Invalid radius settings detected. All radius values must be positive.');
       return false;
     }
-    
+
     if (dispatch.initialRadiusKm > dispatch.maxRadiusKm) {
       this.logger.error('[DispatchService] Initial radius cannot be greater than max radius.');
       return false;
     }
-    
+
     // Validate timeout settings
     if (dispatch.notificationTimeout <= 0 || dispatch.maxDispatchTime <= 0 || dispatch.graceAfterMaxRadius < 0) {
       this.logger.error('[DispatchService] Invalid timeout settings detected.');
       return false;
     }
-    
+
     // Warn about potentially problematic settings
     if (dispatch.notificationTimeout > 60) {
       this.logger.warn('[DispatchService] Notification timeout is very high (>60s). This may lead to poor user experience.');
     }
-    
+
     if (dispatch.maxDispatchTime < 60) {
       this.logger.warn('[DispatchService] Max dispatch time is very low (<60s). This may result in many failed dispatches.');
     }
-    
+
     return true;
   }
 
@@ -108,7 +114,7 @@ class DispatchService {
 
     const rideId = ride._id.toString();
     const dispatch = this.rideSettings.dispatch;
-    
+
     this.logger.info(`[Dispatch] Starting dispatch for ride ${rideId}. Origin: (${origin.longitude}, ${origin.latitude})`);
     this.logger.info(`[Dispatch] Using settings - Initial radius: ${dispatch.initialRadiusKm}km, Max: ${dispatch.maxRadiusKm}km, Timeout: ${dispatch.notificationTimeout}s`);
 
@@ -159,7 +165,7 @@ class DispatchService {
         if (nearbyCaptainIds.length > 0) {
           this.logger.info(`[Dispatch] Ride ${rideId}: Found ${nearbyCaptainIds.length} captains within ${radius}km radius.`);
           let newCaptainsFoundInRadius = false;
-          
+
           for (const captainId of nearbyCaptainIds) {
             if (cancelDispatch || accepted) break; // Exit loop early if cancelled or accepted
 
@@ -169,7 +175,7 @@ class DispatchService {
               notifiedCaptains.add(captainId); // Mark as notified for this cycle
 
               this.logger.info(`[Dispatch] Ride ${rideId}: Notifying captain ${captainId} (timeout: ${notificationTimeout / 1000}s)`);
-              
+
               // Use captain socket service to emit new ride
               if (this.captainSocketService) {
                 const sent = this.captainSocketService.emitToCaptain(captainId, "newRide", {
@@ -353,7 +359,7 @@ class DispatchService {
     // Use a configurable interval, but with a sensible default
     const dispatchCheckInterval = (this.rideSettings?.dispatch?.notificationTimeout || 15) * 2 * 1000; // 2x notification timeout, minimum 30s
     const finalInterval = Math.max(30000, Math.min(dispatchCheckInterval, 120000)); // Between 30s and 2 minutes
-    
+
     this.logger.info(`[Dispatch] Background dispatcher check interval set to ${finalInterval / 1000}s.`);
 
     // Clear any existing interval
@@ -373,7 +379,7 @@ class DispatchService {
 
         if (ridesToDispatch.length > 0) {
           this.logger.info(`[Dispatch Interval] Found ${ridesToDispatch.length} requested rides potentially needing dispatch: ${ridesToDispatch.map(r => r._id).join(', ')}`);
-          
+
           for (const ride of ridesToDispatch) {
             // Double check if a process was somehow created just now
             if (this.dispatchProcesses.has(ride._id.toString())) {
@@ -384,14 +390,14 @@ class DispatchService {
             // Check if ride is too old (older than max dispatch time + grace period)
             const maxAge = (this.rideSettings?.dispatch?.maxDispatchTime || 300) + (this.rideSettings?.dispatch?.graceAfterMaxRadius || 30);
             const rideAge = (Date.now() - new Date(ride.createdAt)) / 1000;
-            
+
             if (rideAge > maxAge) {
               this.logger.warn(`[Dispatch Interval] Ride ${ride._id} is too old (${rideAge}s > ${maxAge}s). Marking as expired.`);
               ride.status = 'notApprove';
               ride.isDispatching = false;
               ride.cancellationReason = `Ride expired - too old (${Math.round(rideAge)}s)`;
               await ride.save();
-              
+
               this.customerSocketService?.emitToCustomer(ride.passenger, 'rideNotApproved', {
                 rideId: ride._id,
                 message: 'Your ride request has expired. Please try requesting again.',
@@ -409,7 +415,7 @@ class DispatchService {
               latitude: ride.pickupLocation.coordinates[1],
               longitude: ride.pickupLocation.coordinates[0],
             };
-            
+
             // Start dispatch (don't await - let it run in background)
             this.dispatchRide(ride, originCoords);
           }
@@ -435,7 +441,7 @@ class DispatchService {
   async refreshSettings() {
     this.logger.info('[DispatchService] Refreshing ride settings...');
     await this.loadRideSettings();
-    
+
     // Restart background dispatcher with new settings
     this.startBackgroundDispatcher();
   }
@@ -449,7 +455,7 @@ class DispatchService {
   getDispatchStats() {
     const activeProcesses = this.dispatchProcesses.size;
     const settings = this.rideSettings?.dispatch || {};
-    
+
     return {
       activeDispatches: activeProcesses,
       activeRideIds: Array.from(this.dispatchProcesses.keys()),
@@ -467,12 +473,12 @@ class DispatchService {
   // Emergency stop all dispatch processes
   emergencyStopAllDispatches() {
     this.logger.warn('[DispatchService] Emergency stop requested for all dispatch processes.');
-    
+
     for (const [rideId, cancelFunc] of this.dispatchProcesses.entries()) {
       this.logger.warn(`[DispatchService] Emergency stopping dispatch for ride ${rideId}`);
       cancelFunc();
     }
-    
+
     // Clear the processes map
     this.dispatchProcesses.clear();
     this.logger.info('[DispatchService] All dispatch processes emergency stopped.');

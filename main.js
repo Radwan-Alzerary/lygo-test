@@ -14,6 +14,7 @@ const createLogger = require("./config/logger");
 const RedisConfig = require("./config/redis");
 const { setupMiddleware, setupErrorHandling } = require("./middleware");
 const { calculateDistance } = require("./utils/helpers");
+const cors = require("cors");
 
 // Import socket services
 const CustomerSocketService = require("./services/customerSocketService");
@@ -28,6 +29,16 @@ class RideHailingApp {
   constructor() {
     this.logger = createLogger();
     this.app = express();
+        // ←── add CORS here ────────────────────────────────────────
+    this.app.use(cors({
+      origin: "https://api.lygo-iq.com",
+      methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
+      allowedHeaders: ["Content-Type","Authorization"],
+      credentials: true
+    }));
+    this.app.options("*", cors());
+    // ─────────────────────────────────────────────────────────
+
     this.server = http.createServer(this.app);
     this.io = null;
     this.redisConfig = null;

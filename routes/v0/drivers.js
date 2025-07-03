@@ -5,6 +5,7 @@ const Ride = require('../../model/ride');
 const MoneyTransfers = require('../../model/moneyTransfers');
 const { createFinancialAccount, updateBalance } = require('../../utils/routeHelpers');
 const { verifyToken } = require('../../middlewares/customerMiddlewareAyuth');
+const { default: mongoose } = require('mongoose');
 
 // GET / - Get all drivers
 router.get('/', async (req, res) => {

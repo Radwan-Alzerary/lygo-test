@@ -98,7 +98,7 @@ router.get('/verifyToken', verifyToken, async (req, res) => {
 /* ─────────────────────── 1)  DRIVER  RATING  ────────────────────────────
    Average & count of driverRating where it isn’t null.
    ---------------------------------------------------------------------- */
-router.get('/rating', verifyToken, async (req, res) => {
+router.get('/my-rating', verifyToken, async (req, res) => {
   try {
     const driverId = new mongoose.Types.ObjectId(req.user.id);
 
@@ -128,7 +128,7 @@ router.get('/rating', verifyToken, async (req, res) => {
 /* ─────────────────────── 2)  DRIVER ANALYSIS ────────────────────────────
    Lifetime + current-week KPIs and recent rides.
    ---------------------------------------------------------------------- */
-router.get('/analysis', verifyToken, async (req, res) => {
+router.get('/my-analysis', verifyToken, async (req, res) => {
   try {
     const driverId = new mongoose.Types.ObjectId(req.user.id);
 

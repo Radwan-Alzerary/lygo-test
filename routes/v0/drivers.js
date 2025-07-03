@@ -70,7 +70,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.get('/verifyToken', verifyToken, async (req, res) => {
+router.get('/api/verifyToken', verifyToken, async (req, res) => {
   try {
     const driver = await Driver.findById(req.user.id)
       .select('-password -__v')   // never expose the hash

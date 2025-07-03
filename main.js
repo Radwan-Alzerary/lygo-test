@@ -30,7 +30,7 @@ class RideHailingApp {
     this.logger = createLogger();
     this.app = express();
     const whitelist = [
-      "https://lygo-iq.com",
+      "https://dashboard.lygo-iq.com",
       "http://localhost:3000",
     ];
 

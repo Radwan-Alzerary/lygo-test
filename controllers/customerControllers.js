@@ -176,6 +176,7 @@ module.exports.verifyOtp = async (req, res, next) => {
         return res.status(400).json({ message: "Customer not found" });
       }
       customer.notifyToken = pushToken;
+      await customer.save();
       const token = createToken(customer._id);
       res.cookie("jwt", token, {
         withCredentials: true,

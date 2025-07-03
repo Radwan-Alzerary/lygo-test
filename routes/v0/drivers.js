@@ -4,19 +4,20 @@ const Driver = require('../../model/Driver');
 const Ride = require('../../model/ride');
 const MoneyTransfers = require('../../model/moneyTransfers');
 const { createFinancialAccount, updateBalance } = require('../../utils/routeHelpers');
+const { verifyToken } = require('../../middlewares/customerMiddlewareAyuth');
 
 // GET / - Get all drivers
 router.get('/', async (req, res) => {
   try {
     const { page = 1, limit = 50, status, search } = req.query;
-    
+
     // Build query
     let query = { active: true };
-    
+
     if (status && status !== 'all') {
       query.isAvailable = status === 'available';
     }
-    
+
     if (search) {
       query.$or = [
         { name: { $regex: search, $options: 'i' } },
@@ -69,6 +70,29 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.get('/verifyToken', verifyToken, async (req, res) => {
+  try {
+    const driver = await Driver.findById(req.user.id)
+      .select('-password -__v')   // never expose the hash
+      .lean();
+
+    if (!driver) {
+      return res.status(404).json({ success: false, message: 'Driver not found' });
+    }
+
+    return res.json({
+      success: true,
+      driver,
+      tokenExpiresAt: new Date(req.user.exp * 1_000).toISOString()
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+
+
 // GET /:id - Get single driver
 router.get('/:id', async (req, res) => {
   try {
@@ -109,16 +133,16 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const driverData = req.body;
-    
+
     // Check if email already exists
     const existingDriver = await Driver.findOne({ email: driverData.email });
     if (existingDriver) {
       return res.status(400).json({ error: 'Email already exists' });
     }
-    
+
     // Create financial account for new driver
     const financialAccountId = await createFinancialAccount();
-    
+
     const driver = new Driver({
       ...driverData,
       financialAccount: financialAccountId,
@@ -315,7 +339,7 @@ router.delete('/:id', async (req, res) => {
 router.get('/:id/analytics', async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Find the driver
     const driver = await Driver.findById(id).populate('financialAccount');
     if (!driver) {
@@ -324,23 +348,23 @@ router.get('/:id/analytics', async (req, res) => {
 
     // Get all rides for this driver
     const rides = await Ride.find({ driver: id }).sort({ createdAt: -1 });
-    
+
     // Calculate analytics
     const completedRides = rides.filter(ride => ride.status === 'completed');
     const cancelledRides = rides.filter(ride => ['canceled', 'cancelled'].includes(ride.status));
-    
+
     // Total earnings from completed rides
     const totalEarnings = completedRides.reduce((sum, ride) => sum + ride.fare, 0);
-    
+
     // Average rating from completed rides with ratings
     const ratedRides = completedRides.filter(ride => ride.driverRating > 0);
-    const averageRating = ratedRides.length > 0 
-      ? ratedRides.reduce((sum, ride) => sum + ride.driverRating, 0) / ratedRides.length 
+    const averageRating = ratedRides.length > 0
+      ? ratedRides.reduce((sum, ride) => sum + ride.driverRating, 0) / ratedRides.length
       : 0;
-    
+
     // Total distance
     const totalDistance = completedRides.reduce((sum, ride) => sum + ride.distance, 0);
-    
+
     // Average ride time
     const averageRideTime = completedRides.length > 0
       ? completedRides.reduce((sum, ride) => sum + ride.duration, 0) / completedRides.length
@@ -357,14 +381,14 @@ router.get('/:id/analytics', async (req, res) => {
     for (let i = 5; i >= 0; i--) {
       const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
-      
+
       const monthRides = completedRides.filter(ride => {
         const rideDate = new Date(ride.createdAt);
         return rideDate >= monthStart && rideDate <= monthEnd;
       });
-      
+
       const monthEarnings = monthRides.reduce((sum, ride) => sum + ride.fare, 0);
-      
+
       monthlyEarnings.push({
         month: monthNames[monthStart.getMonth()],
         earnings: monthEarnings

@@ -29,15 +29,30 @@ class RideHailingApp {
   constructor() {
     this.logger = createLogger();
     this.app = express();
-        // ←── add CORS here ────────────────────────────────────────
-    this.app.use(cors({
-      origin: "https://api.lygo-iq.com",
-      methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
-      allowedHeaders: ["Content-Type","Authorization"],
-      credentials: true
-    }));
-    this.app.options("*", cors());
-    // ─────────────────────────────────────────────────────────
+    const whitelist = [
+      "https://lygo-iq.com",
+      "http://localhost:3000",
+    ];
+
+    const corsOptions = {
+      origin: (origin, callback) => {
+        // allow requests with no origin (like mobile/native clients, curl, postman)
+        if (!origin) return callback(null, true);
+
+        if (whitelist.includes(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error(`CORS policy: origin ${origin} not allowed`));
+        }
+      },
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization"],
+      credentials: true,
+    };
+
+    // … inside your RideHailingApp constructor or setupMiddleware:
+    this.app.use(cors(corsOptions));
+    this.app.options("*", cors(corsOptions));
 
     this.server = http.createServer(this.app);
     this.io = null;

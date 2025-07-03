@@ -70,7 +70,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.get('/api/verifyToken', verifyToken, async (req, res) => {
+router.get('/verifyToken', verifyToken, async (req, res) => {
   try {
     console.log("driver", req.user)
 
@@ -86,7 +86,7 @@ router.get('/api/verifyToken', verifyToken, async (req, res) => {
     return res.json({
       success: true,
       driver,
-      tokenExpiresAt: new Date(req.user.exp * 1_000).toISOString()
+      // tokenExpiresAt: new Date(req.user.exp * 1_000).toISOString()
     });
   } catch (err) {
     console.error(err);

@@ -2,7 +2,65 @@ const express = require('express');
 const router = express.Router();
 const Ride = require('../../model/ride');
 const Driver = require('../../model/Driver');
+const { verifyToken } = require('../../middlewares/customerMiddlewareAyuth');
+
 const Customer = require('../../model/customer');
+const { default: mongoose } = require('mongoose');
+router.post(
+  "/rate",
+  verifyToken,                                               // must be logged-in customer
+  [
+    body("rideId").custom((value) => mongoose.Types.ObjectId.isValid(value)),
+    body("rating").isInt({ min: 1, max: 5 }),
+    body("points").optional().isArray(),
+  ],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(422).json({ errors: errors.array() });
+    }
+
+    const { rideId, rating, points = [] } = req.body;
+
+    try {
+      // 1. fetch the ride & basic guards
+      const ride = await Ride.findById(rideId).select(
+        "passenger driver status passengerRating"
+      );
+      if (!ride) return res.status(404).json({ message: "Ride not found" });
+
+      if (!ride.passenger.equals(req.user.id))
+        return res.status(403).json({ message: "Not your ride" });
+
+      if (ride.status !== "completed")
+        return res
+          .status(400)
+          .json({ message: "Ride must be completed before rating" });
+
+      if (ride.passengerRating !== null)
+        return res.status(409).json({ message: "Ride already rated" });
+
+      // 2. update ride with rating + optional points
+      ride.passengerRating = rating;
+      if (points.length) ride.set("passengerFeedbackPoints", points); // optional
+      await ride.save();
+
+      // 3. update driver's aggregate rating (create the fields if missing)
+      await Driver.findByIdAndUpdate(
+        ride.driver,
+        {
+          $inc: { ratingCount: 1, ratingTotal: rating },
+        },
+        { upsert: false }
+      );
+
+      res.json({ success: true });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
 
 // GET / - Get all rides
 router.get('/', async (req, res) => {

@@ -199,6 +199,7 @@ router.get('/my-analysis', verifyToken, async (req, res) => {
     /* recent 10 rides list */
     const recent = await Ride.find({ driver: driverId, status: 'completed' })
       .sort({ updatedAt: -1 })
+      .limit(10)
       .lean()
       .select('pickupLocation dropoffLocation fare driverRating updatedAt rideCode');
     console.log(recent)

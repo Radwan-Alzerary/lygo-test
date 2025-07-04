@@ -251,6 +251,7 @@ class CaptainSocketService {
             if (this.validateFareInBounds(ride.fare.amount)) {
               notifiedRideCount++;
               this.logger.info(`[Socket.IO Captain] Ride ${ride._id} is within ${notificationRadius}km (${distance.toFixed(2)}km). Emitting 'newRide' to captain ${captainId}`);
+              console.log(ride);
               socket.emit("newRide", {
                 rideId: ride._id,
                 pickupLocation: ride.pickupLocation.coordinates,

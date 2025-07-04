@@ -76,10 +76,12 @@ router.get('/verifyToken', verifyToken, async (req, res) => {
     console.log("driver", req.user)
 
     const driver = await Driver.findById(req.user.id)
+      .populate('financialAccount')
       .select('-password -__v')   // never expose the hash
       .lean();
     console.log("driver", driver)
     console.log("driver", req.user)
+    driver.availableBalance = driver.financialAccount?.vault || 0
     if (!driver) {
       return res.status(404).json({ success: false, message: 'Driver not found' });
     }
@@ -103,6 +105,7 @@ router.get('/my-rating', verifyToken, async (req, res) => {
   try {
     const driverId = new mongoose.Types.ObjectId(req.user.id);
 
+    // -- التجميع: نحسب عدد التقييمات ومتوسطها
     const result = await Ride.aggregate([
       { $match: { driver: driverId, driverRating: { $ne: null } } },
       {
@@ -114,11 +117,16 @@ router.get('/my-rating', verifyToken, async (req, res) => {
       }
     ]);
 
+    // إذا لم توجد نتائج، نهيّئ بقيم صفرية
     const stats = result[0] || { totalRatings: 0, averageRating: 0 };
+
+    // نُظهِر المتوسّط فقط بعد 10 تقييمات
+    const average =
+      stats.totalRatings >= 10 ? Number(stats.averageRating.toFixed(2)) : 0; // أو استخدم null
 
     res.json({
       totalRatings: stats.totalRatings,
-      averageRating: Number(stats.averageRating.toFixed(2))
+      averageRating: average
     });
   } catch (err) {
     console.error(err);
@@ -219,7 +227,7 @@ router.get('/my-analysis', verifyToken, async (req, res) => {
         to: r.dropoffLocation,
         rating: r.driverRating || 0,
         fare: r.fare.amount,
-        rideCode:r.rideCode
+        rideCode: r.rideCode
       }))
 
     });

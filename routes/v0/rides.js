@@ -97,7 +97,6 @@ router.post(
     }
 
     const { rideId, rating, points = [] } = req.body;
-    console.log(req.body)
     try {
       // 1. fetch the ride & basic guards
       const ride = await Ride.findById(rideId).select(

@@ -259,7 +259,8 @@ class CaptainSocketService {
                 currency: this.rideSettings.fare.currency,
                 distance: ride.distance,
                 duration: ride.duration,
-                paymentMethod: ride.paymentMethod
+                paymentMethod: ride.paymentMethod,
+                xx:"cc"
               });
             }
           }

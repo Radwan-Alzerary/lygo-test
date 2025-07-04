@@ -73,6 +73,10 @@ driverSchema.statics.login = async function(email, password) {
   }
   return user;
 };
+ driverSchema.methods.setAvailability = async function (active) {
+   this.isAvailable = active;
+   return this.save();         // يعيد السطر المحفوظ (Promise)
+ };
 
 // Geospatial index if you store driver's location directly in this schema
 // driverSchema.index({ currentLocation: "2dsphere" });

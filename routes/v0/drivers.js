@@ -81,7 +81,6 @@ router.get('/verifyToken', verifyToken, async (req, res) => {
     if (!driver) {
       return res.status(404).json({ success: false, message: 'Driver not found' });
     }
-    console.log("driver", driver)
 
     return res.json({
       success: true,
@@ -91,6 +90,28 @@ router.get('/verifyToken', verifyToken, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+router.post("/toggle-availability", verifyToken, async (req, res) => {
+  try {
+    const { active } = req.body;
+    if (typeof active !== "boolean") {
+      return res.status(400).json({ message: "حقل active يجب أن يكون Boolean." });
+    }
+
+    // ابحث عن السائق حسب الـ id المأخوذ من التوكن
+    const driver = await Driver.findById(req.user.id);
+    if (!driver) return res.status(404).json({ message: "السائق غير موجود." });
+
+    await driver.setAvailability(active);
+    return res.json({
+      message: "تم تحديث حالة التوفر بنجاح.",
+      isAvailable: driver.isAvailable,
+    });
+  } catch (err) {
+    console.error("Availability toggle error:", err);
+    return res.status(500).json({ message: "فشل تحديث التوفر." });
   }
 });
 

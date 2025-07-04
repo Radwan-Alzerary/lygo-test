@@ -3,6 +3,7 @@ const router = express.Router();
 const Ride = require('../../model/ride');
 const Driver = require('../../model/Driver');
 const { verifyToken } = require('../../middlewares/customerMiddlewareAyuth');
+const { validationResult } = require("express-validator");
 
 const Customer = require('../../model/customer');
 const { default: mongoose } = require('mongoose');

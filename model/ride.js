@@ -11,14 +11,15 @@ const rideSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Driver",
     },
+    
     pickupLocation: {
       type: { type: String, enum: ["Point"], default: "Point" },
-      name: { type: String }, // e.g., "University District"
+      locationName: { type: String }, // e.g., "University District"
       coordinates: { type: [Number], required: true },
     },
     dropoffLocation: {
       type: { type: String, enum: ["Point"], default: "Point" },
-      name: { type: String }, // e.g., "University District"
+      locationName: { type: String }, // e.g., "University District"
       coordinates: { type: [Number], required: true },
     },
     status: {

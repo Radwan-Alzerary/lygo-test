@@ -476,12 +476,12 @@ class CustomerSocketService {
         driver: null,
         pickupLocation: {
           type: 'Point',
-          name: rideData.originPlaceName,
+          locationName: rideData.originPlaceName,
           coordinates: [rideData.origin.longitude, rideData.origin.latitude],
         },
         dropoffLocation: {
           type: 'Point',
-          name: rideData.destinationPlaceName,
+          locationName: rideData.destinationPlaceName,
           coordinates: [rideData.destination.longitude, rideData.destination.latitude],
         },
         fare: {

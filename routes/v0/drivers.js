@@ -200,7 +200,7 @@ router.get('/my-analysis', verifyToken, async (req, res) => {
     const recent = await Ride.find({ driver: driverId, status: 'completed' })
       .sort({ updatedAt: -1 })
       .lean()
-      .select('pickupLocation dropoffLocation fare driverRating updatedAt');
+      .select('pickupLocation dropoffLocation fare driverRating updatedAt rideCode');
     console.log(recent)
     res.json({
       totalEarnings: lifetime.totalEarnings,

@@ -16,12 +16,12 @@ class DispatchService {
     this.rideSettings = null; // Cache for ride settings
     this.backgroundIntervalId = null; // To manage background dispatcher
   }
+  
   setSocketServices(captainSocketService, customerSocketService) {
     this.captainSocketService = captainSocketService;
     this.customerSocketService = customerSocketService;
     this.logger.info('[DispatchService] Socket services injected.');
   }
-
 
   async initialize() {
     // Load ride settings
@@ -128,7 +128,7 @@ class DispatchService {
     const dispatchStartTime = Date.now();
 
     let cancelDispatch = false;
-    let accepted = false; // Flag to track if ride was accepted within the loop
+    let accepted = false; // Flag to track if ride was accepted
 
     // Cancellation function for this specific dispatch process
     const cancelFunc = () => {
@@ -139,16 +139,16 @@ class DispatchService {
     this.logger.debug(`[Dispatch] Registered cancellation function for ride ${rideId}`);
 
     try {
-      // Keep track of captains already notified in this dispatch cycle to avoid spamming
-      const notifiedCaptains = new Set();
+      // Keep track of all captains notified across all radius expansions
+      const globalNotifiedCaptains = new Set();
 
       while (!cancelDispatch && !accepted && radius <= maxRadius) {
         // Check for overall timeout
         const elapsedTime = Date.now() - dispatchStartTime;
         if (elapsedTime >= maxDispatchTime) {
           this.logger.warn(`[Dispatch] Max dispatch time (${maxDispatchTime / 1000}s) exceeded for ride ${rideId}. Elapsed: ${elapsedTime / 1000}s`);
-          cancelDispatch = true; // Mark for cancellation, status update happens after loop
-          break; // Exit the while loop
+          cancelDispatch = true;
+          break;
         }
 
         // Check if the ride object still exists and is 'requested' before searching
@@ -163,20 +163,20 @@ class DispatchService {
         const nearbyCaptainIds = await findNearbyCaptains(this.redisClient, this.logger, origin, radius);
 
         if (nearbyCaptainIds.length > 0) {
-          this.logger.info(`[Dispatch] Ride ${rideId}: Found ${nearbyCaptainIds.length} captains within ${radius}km radius.`);
-          let newCaptainsFoundInRadius = false;
+          // Filter out already notified captains and offline captains
+          const newOnlineCaptains = nearbyCaptainIds.filter(captainId => 
+            this.onlineCaptains[captainId] && !globalNotifiedCaptains.has(captainId)
+          );
 
-          for (const captainId of nearbyCaptainIds) {
-            if (cancelDispatch || accepted) break; // Exit loop early if cancelled or accepted
-
-            // Check if captain is online and *not* already notified in this cycle
-            if (this.onlineCaptains[captainId] && !notifiedCaptains.has(captainId)) {
-              newCaptainsFoundInRadius = true;
-              notifiedCaptains.add(captainId); // Mark as notified for this cycle
-
-              this.logger.info(`[Dispatch] Ride ${rideId}: Notifying captain ${captainId} (timeout: ${notificationTimeout / 1000}s)`);
-
-              // Use captain socket service to emit new ride
+          if (newOnlineCaptains.length > 0) {
+            this.logger.info(`[Dispatch] Ride ${rideId}: Found ${newOnlineCaptains.length} new online captains within ${radius}km radius.`);
+            
+            // Send notifications to ALL captains simultaneously
+            const notificationPromises = newOnlineCaptains.map(captainId => {
+              globalNotifiedCaptains.add(captainId); // Mark as notified
+              
+              this.logger.info(`[Dispatch] Ride ${rideId}: Notifying captain ${captainId}`);
+              
               if (this.captainSocketService) {
                 const sent = this.captainSocketService.emitToCaptain(captainId, "newRide", {
                   rideId: ride._id,
@@ -191,47 +191,37 @@ class DispatchService {
 
                 if (!sent) {
                   this.logger.warn(`[Dispatch] Failed to send newRide notification to captain ${captainId} - captain may be offline`);
-                  continue; // Skip to next captain
                 }
+                
+                return sent;
               } else {
                 this.logger.error(`[Dispatch] CaptainSocketService not available - cannot notify captain ${captainId}`);
-                continue;
+                return false;
               }
+            });
 
-              // --- Asynchronous Wait and Check ---
-              this.logger.debug(`[Dispatch] Ride ${rideId}: Waiting ${notificationTimeout / 1000}s for captain ${captainId} to potentially accept.`);
-              await new Promise((resolve) => setTimeout(resolve, notificationTimeout));
+            // Wait for all notifications to be sent
+            const notificationResults = await Promise.all(notificationPromises);
+            const successfulNotifications = notificationResults.filter(result => result).length;
+            
+            this.logger.info(`[Dispatch] Ride ${rideId}: Successfully notified ${successfulNotifications}/${newOnlineCaptains.length} captains in radius ${radius}km`);
 
-              // Check if the ride was accepted *during* the wait
-              const updatedRide = await Ride.findById(rideId).select('status driver'); // Select only needed fields
-              if (updatedRide && updatedRide.status === "accepted") {
-                accepted = true; // Mark as accepted
-                this.logger.info(`[Dispatch] Ride ${rideId} was accepted by captain ${updatedRide.driver} during wait period.`);
-                break; // Exit the inner captain loop
-              } else {
-                this.logger.info(`[Dispatch] Ride ${rideId}: Captain ${captainId} did not accept within ${notificationTimeout / 1000}s (or ride status changed). Current status: ${updatedRide?.status}`);
-              }
-            } else if (!this.onlineCaptains[captainId]) {
-              this.logger.debug(`[Dispatch] Ride ${rideId}: Captain ${captainId} is offline, skipping.`);
-            } else {
-              this.logger.debug(`[Dispatch] Ride ${rideId}: Captain ${captainId} already notified in this cycle, skipping.`);
-            }
-          } // End captain loop
+            // Wait for the notification timeout period to see if any captain accepts
+            this.logger.debug(`[Dispatch] Ride ${rideId}: Waiting ${notificationTimeout / 1000}s for captains to respond.`);
+            await new Promise((resolve) => setTimeout(resolve, notificationTimeout));
 
-          // If we found new captains in this radius, wait a bit before expanding radius further
-          if (newCaptainsFoundInRadius && !accepted && !cancelDispatch) {
-            const pauseDuration = Math.min(5000, notificationTimeout / 2); // Pause for 5s or half notification timeout, whichever is smaller
-            this.logger.debug(`[Dispatch] Ride ${rideId}: Pausing ${pauseDuration / 1000}s after notifying captains in radius ${radius}km.`);
-            await new Promise((resolve) => setTimeout(resolve, pauseDuration));
-
-            // Re-check if accepted during the pause
-            const updatedRide = await Ride.findById(rideId).select('status');
+            // Check if the ride was accepted during the wait period
+            const updatedRide = await Ride.findById(rideId).select('status driver');
             if (updatedRide && updatedRide.status === "accepted") {
               accepted = true;
-              this.logger.info(`[Dispatch] Ride ${rideId} was accepted during pause.`);
+              this.logger.info(`[Dispatch] Ride ${rideId} was accepted by captain ${updatedRide.driver} within ${notificationTimeout / 1000}s.`);
+              break; // Exit the radius expansion loop
+            } else {
+              this.logger.info(`[Dispatch] Ride ${rideId}: No captain accepted within ${notificationTimeout / 1000}s. Current status: ${updatedRide?.status}`);
             }
+          } else {
+            this.logger.info(`[Dispatch] Ride ${rideId}: All ${nearbyCaptainIds.length} captains in radius ${radius}km were already notified or offline.`);
           }
-
         } else {
           this.logger.info(`[Dispatch] Ride ${rideId}: No captains found within radius ${radius} km.`);
         }
@@ -240,19 +230,24 @@ class DispatchService {
         if (!accepted && !cancelDispatch) {
           radius += radiusIncrement;
           this.logger.info(`[Dispatch] Ride ${rideId}: Increasing search radius to ${radius} km.`);
+          
+          // Small delay before expanding radius to avoid overwhelming the system
+          if (radius <= maxRadius) {
+            await new Promise((resolve) => setTimeout(resolve, 2000)); // 2 second delay before expanding
+          }
         }
       } // End while loop
 
       // --- Handle Dispatch Outcome ---
-      const finalRideState = await Ride.findById(rideId); // Get the latest state
+      const finalRideState = await Ride.findById(rideId);
 
       if (accepted) {
-        // Ride was accepted by someone, log success. State changes handled in 'acceptRide'
+        // Ride was accepted by someone, log success
         this.logger.info(`[Dispatch] Ride ${rideId} successfully accepted by captain ${finalRideState?.driver}. Dispatch process complete.`);
       } else if (cancelDispatch) {
         // Dispatch was cancelled externally or timed out
         this.logger.warn(`[Dispatch] Dispatch for ride ${rideId} was cancelled or timed out.`);
-        // If timeout occurred specifically, mark as notApprove
+        
         if (Date.now() - dispatchStartTime >= maxDispatchTime && finalRideState && finalRideState.status === 'requested') {
           this.logger.warn(`[Dispatch] Ride ${rideId} timed out after ${maxDispatchTime / 1000}s. Updating status to 'notApprove'.`);
           finalRideState.status = "notApprove";
@@ -277,7 +272,7 @@ class DispatchService {
           `Holding for an extra ${graceAfterMaxRadius / 1000}s before aborting.`,
         );
 
-        // non‑blocking sleep, polling every 5 s in case someone accepts
+        // Check periodically during grace period
         const pollInterval = 5 * 1000;
         const giveUpAt = Date.now() + graceAfterMaxRadius;
 
@@ -317,14 +312,11 @@ class DispatchService {
             });
           }
         }
-      } else {
-        // Should not happen if logic is correct
-        this.logger.warn(`[Dispatch] Ride ${rideId}: Dispatch loop ended with unexpected state. Final Status: ${finalRideState?.status}`);
       }
 
     } catch (err) {
       this.logger.error(`[Dispatch] Error during dispatch process for ride ${rideId}:`, err);
-      // Attempt to mark ride as failed
+      
       try {
         const rideToUpdate = await Ride.findById(rideId);
         if (rideToUpdate && rideToUpdate.status === 'requested') {
@@ -335,7 +327,6 @@ class DispatchService {
           await rideToUpdate.save();
           this.logger.info(`[DB] Marked ride ${rideId} as 'failed' due to dispatch error.`);
 
-          // Notify customer about the error
           this.customerSocketService?.emitToCustomer(rideToUpdate.passenger, 'rideError', {
             rideId: rideToUpdate._id,
             message: 'An error occurred while searching for captains. Please try again.',

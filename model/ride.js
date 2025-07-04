@@ -1,7 +1,16 @@
 const mongoose = require("mongoose");
+const { v4: uuidv4 } = require("uuid");      // ➊
 
 const rideSchema = new mongoose.Schema(
   {
+    rideCode: {                                // ➋ e.g. "A7F4C2"
+      type: String,
+      length: 6,
+      unique: true,
+      index: true,
+      required: true,
+    },
+
     passenger: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Customer",
@@ -11,7 +20,7 @@ const rideSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Driver",
     },
-    
+
     pickupLocation: {
       type: { type: String, enum: ["Point"], default: "Point" },
       locationName: { type: String }, // e.g., "University District"
@@ -81,6 +90,20 @@ rideSchema.pre('save', function (next) {
   }
   next();
 });
+rideSchema.pre("validate", async function (next) {
+  if (this.rideCode) return next();
+
+  const Ride = this.constructor;
+  let code;
+
+  do {
+    code = uuidv4().replace(/-/g, "").slice(0, 6).toUpperCase();
+  } while (await Ride.exists({ rideCode: code }));   // avoid collision
+
+  this.rideCode = code;
+  next();
+});
+rideSchema.index({ rideCode: 1 }, { unique: true });
 
 // Adding indexes for geospatial queries
 rideSchema.index({ pickupLocation: "2dsphere" });

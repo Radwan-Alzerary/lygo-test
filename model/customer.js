@@ -6,11 +6,13 @@ const customerSchema = new mongoose.Schema(
     phoneNumber: { type: String, required: true },
     email: { type: String, },
     isActive: { type: Boolean, default: true },
+    
     rideHistory: [
       {
         rideId: { type: mongoose.Schema.Types.ObjectId },
       },
     ],
+
     notifyToken: {
       type: String,
       default: "",

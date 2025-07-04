@@ -215,11 +215,12 @@ router.get('/my-analysis', verifyToken, async (req, res) => {
         id     : r._id,
         date   : r.updatedAt.toISOString().slice(0,10),
         time   : r.updatedAt.toISOString().slice(11,16),
-        from   : r.pickupAddress,
-        to     : r.dropoffAddress,
+        from   : r.pickupLocation,
+        to     : r.dropoffLocation,
         rating : r.driverRating || 0,
         fare   : r.fare.amount
       }))
+
     });
 
   } catch (err) {

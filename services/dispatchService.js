@@ -16,7 +16,7 @@ class DispatchService {
     this.rideSettings = null; // Cache for ride settings
     this.backgroundIntervalId = null; // To manage background dispatcher
   }
-  
+
   setSocketServices(captainSocketService, customerSocketService) {
     this.captainSocketService = captainSocketService;
     this.customerSocketService = customerSocketService;
@@ -164,19 +164,19 @@ class DispatchService {
 
         if (nearbyCaptainIds.length > 0) {
           // Filter out already notified captains and offline captains
-          const newOnlineCaptains = nearbyCaptainIds.filter(captainId => 
+          const newOnlineCaptains = nearbyCaptainIds.filter(captainId =>
             this.onlineCaptains[captainId] && !globalNotifiedCaptains.has(captainId)
           );
 
           if (newOnlineCaptains.length > 0) {
             this.logger.info(`[Dispatch] Ride ${rideId}: Found ${newOnlineCaptains.length} new online captains within ${radius}km radius.`);
-            
+
             // Send notifications to ALL captains simultaneously
             const notificationPromises = newOnlineCaptains.map(captainId => {
               globalNotifiedCaptains.add(captainId); // Mark as notified
-              
+
               this.logger.info(`[Dispatch] Ride ${rideId}: Notifying captain ${captainId}`);
-              
+
               if (this.captainSocketService) {
                 const sent = this.captainSocketService.emitToCaptain(captainId, "newRide", {
                   rideId: ride._id,
@@ -186,13 +186,17 @@ class DispatchService {
                   currency: ride.fare.currency,
                   distance: ride.distance,
                   duration: ride.duration,
-                  paymentMethod: ride.paymentMethod
+                  paymentMethod: ride.paymentMethod,
+                  pickupName: ride.pickupLocation.locationName,
+
+                  dropoffName: ride.pickupLocation.locationName,
+
                 });
 
                 if (!sent) {
                   this.logger.warn(`[Dispatch] Failed to send newRide notification to captain ${captainId} - captain may be offline`);
                 }
-                
+
                 return sent;
               } else {
                 this.logger.error(`[Dispatch] CaptainSocketService not available - cannot notify captain ${captainId}`);
@@ -203,7 +207,7 @@ class DispatchService {
             // Wait for all notifications to be sent
             const notificationResults = await Promise.all(notificationPromises);
             const successfulNotifications = notificationResults.filter(result => result).length;
-            
+
             this.logger.info(`[Dispatch] Ride ${rideId}: Successfully notified ${successfulNotifications}/${newOnlineCaptains.length} captains in radius ${radius}km`);
 
             // Wait for the notification timeout period to see if any captain accepts
@@ -230,7 +234,7 @@ class DispatchService {
         if (!accepted && !cancelDispatch) {
           radius += radiusIncrement;
           this.logger.info(`[Dispatch] Ride ${rideId}: Increasing search radius to ${radius} km.`);
-          
+
           // Small delay before expanding radius to avoid overwhelming the system
           if (radius <= maxRadius) {
             await new Promise((resolve) => setTimeout(resolve, 2000)); // 2 second delay before expanding
@@ -247,7 +251,7 @@ class DispatchService {
       } else if (cancelDispatch) {
         // Dispatch was cancelled externally or timed out
         this.logger.warn(`[Dispatch] Dispatch for ride ${rideId} was cancelled or timed out.`);
-        
+
         if (Date.now() - dispatchStartTime >= maxDispatchTime && finalRideState && finalRideState.status === 'requested') {
           this.logger.warn(`[Dispatch] Ride ${rideId} timed out after ${maxDispatchTime / 1000}s. Updating status to 'notApprove'.`);
           finalRideState.status = "notApprove";
@@ -316,7 +320,7 @@ class DispatchService {
 
     } catch (err) {
       this.logger.error(`[Dispatch] Error during dispatch process for ride ${rideId}:`, err);
-      
+
       try {
         const rideToUpdate = await Ride.findById(rideId);
         if (rideToUpdate && rideToUpdate.status === 'requested') {

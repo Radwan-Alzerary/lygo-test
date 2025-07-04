@@ -73,18 +73,15 @@ router.get('/', async (req, res) => {
 
 router.get('/verifyToken', verifyToken, async (req, res) => {
   try {
-    console.log("driver", req.user)
 
     const driver = await Driver.findById(req.user.id)
       .populate('financialAccount')
       .select('-password -__v')   // never expose the hash
       .lean();
-    console.log("driver", driver)
-    console.log("driver", req.user)
-    driver.availableBalance = driver.financialAccount?.vault || 0
     if (!driver) {
       return res.status(404).json({ success: false, message: 'Driver not found' });
     }
+    console.log("driver", driver)
 
     return res.json({
       success: true,

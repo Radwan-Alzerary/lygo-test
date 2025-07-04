@@ -254,7 +254,10 @@ class CaptainSocketService {
               socket.emit("newRide", {
                 rideId: ride._id,
                 pickupLocation: ride.pickupLocation.coordinates,
+                pickupName: ride.pickupLocation.locationName,
                 dropoffLocation: ride.dropoffLocation.coordinates,
+                dropoffName: ride.pickupLocation.locationName,
+
                 fare: ride.fare.amount,
                 currency: this.rideSettings.fare.currency,
                 distance: ride.distance,

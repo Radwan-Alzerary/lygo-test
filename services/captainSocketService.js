@@ -260,7 +260,6 @@ class CaptainSocketService {
                 distance: ride.distance,
                 duration: ride.duration,
                 paymentMethod: ride.paymentMethod,
-                xx:"cc"
               });
             }
           }

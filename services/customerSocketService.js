@@ -470,7 +470,7 @@ class CustomerSocketService {
       const calculatedFare = this.calculateFare(distance, duration);
 
       this.logger.info(`[Socket.IO Customer] Creating new ride for customer ${customerId}. Calculated fare: ${calculatedFare} ${this.rideSettings.fare.currency}`);
-
+      console.log(rideData)
       const newRide = new Ride({
         passenger: customerId,
         driver: null,

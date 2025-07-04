@@ -217,7 +217,8 @@ router.get('/my-analysis', verifyToken, async (req, res) => {
         from: r.pickupLocation,
         to: r.dropoffLocation,
         rating: r.driverRating || 0,
-        fare: r.fare.amount
+        fare: r.fare.amount,
+        rideCode:r.rideCode
       }))
 
     });

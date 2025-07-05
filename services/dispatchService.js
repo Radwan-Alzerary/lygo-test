@@ -130,6 +130,11 @@ class DispatchService {
     let cancelDispatch = false;
     let accepted = false; // Flag to track if ride was accepted
 
+    const passenger = await Customer.findById(ride.passenger)
+      .select("name phoneNumber")
+      .lean();               // استعلام خفيف بدون وثائق Mongoose كاملة
+
+
     // Cancellation function for this specific dispatch process
     const cancelFunc = () => {
       this.logger.warn(`[Dispatch] Cancellation requested externally for ride ${rideId}.`);
@@ -177,6 +182,8 @@ class DispatchService {
 
               this.logger.info(`[Dispatch] Ride ${rideId}: Notifying captain ${captainId}`);
 
+
+
               if (this.captainSocketService) {
                 const sent = this.captainSocketService.emitToCaptain(captainId, "newRide", {
                   rideId: ride._id,
@@ -190,6 +197,12 @@ class DispatchService {
                   pickupName: ride.pickupLocation.locationName,
 
                   dropoffName: ride.pickupLocation.locationName,
+                  passengerInfo: {
+                    id: passenger?._id,
+                    name: passenger?.name,
+                    phoneNumber: passenger?.phoneNumber,
+                  }
+
 
                 });
 

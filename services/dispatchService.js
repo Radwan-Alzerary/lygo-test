@@ -1,3 +1,4 @@
+const customer = require("../model/customer");
 const Ride = require("../model/ride");
 const RideSetting = require("../model/rideSetting"); // Add RideSetting import
 const { findNearbyCaptains } = require("../utils/helpers");
@@ -130,7 +131,7 @@ class DispatchService {
     let cancelDispatch = false;
     let accepted = false; // Flag to track if ride was accepted
 
-    const passenger = await Customer.findById(ride.passenger)
+    const passenger = await customer.findById(ride.passenger)
       .select("name phoneNumber")
       .lean();               // استعلام خفيف بدون وثائق Mongoose كاملة
 
@@ -195,7 +196,6 @@ class DispatchService {
                   duration: ride.duration,
                   paymentMethod: ride.paymentMethod,
                   pickupName: ride.pickupLocation.locationName,
-
                   dropoffName: ride.pickupLocation.locationName,
                   passengerInfo: {
                     id: passenger?._id,

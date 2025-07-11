@@ -16,6 +16,9 @@ class DispatchService {
 
     this.rideSettings = null; // Cache for ride settings
     this.backgroundIntervalId = null; // To manage background dispatcher
+    
+    // NEW: Track which captains were notified for each ride
+    this.rideNotifications = new Map(); // rideId -> Set of captainIds
   }
 
   setSocketServices(captainSocketService, customerSocketService) {
@@ -116,6 +119,9 @@ class DispatchService {
     const rideId = ride._id.toString();
     const dispatch = this.rideSettings.dispatch;
 
+    // NEW: Initialize notification tracking for this ride
+    this.rideNotifications.set(rideId, new Set());
+
     this.logger.info(`[Dispatch] Starting dispatch for ride ${rideId}. Origin: (${origin.longitude}, ${origin.latitude})`);
     this.logger.info(`[Dispatch] Using settings - Initial radius: ${dispatch.initialRadiusKm}km, Max: ${dispatch.maxRadiusKm}km, Timeout: ${dispatch.notificationTimeout}s`);
 
@@ -134,7 +140,6 @@ class DispatchService {
     const passenger = await customer.findById(ride.passenger)
       .select("name phoneNumber")
       .lean();               // استعلام خفيف بدون وثائق Mongoose كاملة
-
 
     // Cancellation function for this specific dispatch process
     const cancelFunc = () => {
@@ -179,11 +184,12 @@ class DispatchService {
 
             // Send notifications to ALL captains simultaneously
             const notificationPromises = newOnlineCaptains.map(captainId => {
-              globalNotifiedCaptains.add(captainId); // Mark as notified
+              globalNotifiedCaptains.add(captainId);
+              
+              // NEW: Track this captain was notified for this ride
+              this.rideNotifications.get(rideId).add(captainId);
 
               this.logger.info(`[Dispatch] Ride ${rideId}: Notifying captain ${captainId}`);
-
-
 
               if (this.captainSocketService) {
                 const sent = this.captainSocketService.emitToCaptain(captainId, "newRide", {
@@ -202,17 +208,17 @@ class DispatchService {
                     name: passenger?.name,
                     phoneNumber: passenger?.phoneNumber,
                   }
-
-
                 });
-
                 if (!sent) {
                   this.logger.warn(`[Dispatch] Failed to send newRide notification to captain ${captainId} - captain may be offline`);
+                  // NEW: Remove from tracking if notification failed
+                  this.rideNotifications.get(rideId).delete(captainId);
                 }
-
                 return sent;
               } else {
                 this.logger.error(`[Dispatch] CaptainSocketService not available - cannot notify captain ${captainId}`);
+                // NEW: Remove from tracking if service not available
+                this.rideNotifications.get(rideId).delete(captainId);
                 return false;
               }
             });
@@ -359,6 +365,13 @@ class DispatchService {
         this.logger.info(`[Dispatch] Cleaned up dispatch process entry for ride ${rideId}.`);
         this.logger.debug(`[Dispatch] Active dispatch processes: ${Array.from(this.dispatchProcesses.keys())}`);
       }
+      
+      // NEW: Clean up notification tracking only if ride was not accepted
+      const finalRide = await Ride.findById(rideId).select('status');
+      if (!finalRide || finalRide.status !== 'accepted') {
+        this.cleanupRideNotifications(rideId);
+      }
+      // Note: If ride was accepted, cleanup will be handled by notifyCaptainsToHideRide method
     }
   }
 
@@ -467,6 +480,7 @@ class DispatchService {
     return {
       activeDispatches: activeProcesses,
       activeRideIds: Array.from(this.dispatchProcesses.keys()),
+      activeNotifications: this.rideNotifications.size, // NEW: Include notification tracking stats
       settings: {
         initialRadiusKm: settings.initialRadiusKm,
         maxRadiusKm: settings.maxRadiusKm,
@@ -489,7 +503,75 @@ class DispatchService {
 
     // Clear the processes map
     this.dispatchProcesses.clear();
+
+    // NEW: Clean up all notification tracking
+    const trackedRides = Array.from(this.rideNotifications.keys());
+    this.rideNotifications.clear();
+    this.logger.info(`[DispatchService] Cleaned up notification tracking for ${trackedRides.length} rides during emergency stop.`);
+    
     this.logger.info('[DispatchService] All dispatch processes emergency stopped.');
+  }
+
+  // NEW: Method to get notified captains for a ride
+  getNotifiedCaptains(rideId) {
+    return this.rideNotifications.get(rideId.toString()) || new Set();
+  }
+
+  // NEW: Method to clean up notification tracking
+  cleanupRideNotifications(rideId) {
+    const rideIdStr = rideId.toString();
+    if (this.rideNotifications.has(rideIdStr)) {
+      const notifiedCount = this.rideNotifications.get(rideIdStr).size;
+      this.rideNotifications.delete(rideIdStr);
+      this.logger.info(`[Dispatch] Cleaned up notification tracking for ride ${rideIdStr}. ${notifiedCount} captains were notified.`);
+    }
+  }
+
+  // NEW: Method to notify captains to hide a ride
+  notifyCaptainsToHideRide(rideId, excludeCaptainId = null) {
+    const rideIdStr = rideId.toString();
+    const notifiedCaptains = this.rideNotifications.get(rideIdStr);
+    
+    if (!notifiedCaptains || notifiedCaptains.size === 0) {
+      this.logger.debug(`[Dispatch] No captains to notify for hiding ride ${rideIdStr}`);
+      return;
+    }
+
+    let notifiedCount = 0;
+    const failedNotifications = [];
+
+    notifiedCaptains.forEach(captainId => {
+      // Don't notify the captain who accepted the ride
+      if (captainId !== excludeCaptainId) {
+        if (this.captainSocketService) {
+          const sent = this.captainSocketService.emitToCaptain(captainId, "hideRide", {
+            rideId: rideId,
+            reason: "ride_taken",
+            message: "This ride has been taken by another captain."
+          });
+          
+          if (sent) {
+            notifiedCount++;
+            this.logger.debug(`[Dispatch] Notified captain ${captainId} to hide ride ${rideIdStr}`);
+          } else {
+            failedNotifications.push(captainId);
+            this.logger.warn(`[Dispatch] Failed to notify captain ${captainId} to hide ride ${rideIdStr} - captain may be offline`);
+          }
+        } else {
+          failedNotifications.push(captainId);
+          this.logger.error(`[Dispatch] CaptainSocketService not available - cannot notify captain ${captainId} to hide ride ${rideIdStr}`);
+        }
+      }
+    });
+
+    this.logger.info(`[Dispatch] Notified ${notifiedCount} captains to hide ride ${rideIdStr}. Failed: ${failedNotifications.length}`);
+    
+    if (failedNotifications.length > 0) {
+      this.logger.warn(`[Dispatch] Failed to notify captains to hide ride ${rideIdStr}: ${failedNotifications.join(', ')}`);
+    }
+    
+    // Clean up after notifying
+    this.cleanupRideNotifications(rideIdStr);
   }
 }
 

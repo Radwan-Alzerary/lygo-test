@@ -16,6 +16,9 @@ class CaptainSocketService {
     this.dispatchRide = dependencies.dispatchRide;
     this.customerSocketService = dependencies.customerSocketService;
 
+    // NEW: Add reference to DispatchService for notification management
+    this.dispatchService = dependencies.dispatchService || null;
+
     this.captainNamespace = null;
     this.rideSettings = null; // Cache for ride settings
   }
@@ -313,6 +316,11 @@ class CaptainSocketService {
       await this.handleEndRide(socket, captainId, data);
     });
 
+    // NEW: Listen for hide ride acknowledgments
+    socket.on("hideRideAcknowledge", (data) => {
+      this.handleHideRideAcknowledge(socket, captainId, data);
+    });
+
     // Handle disconnect
     socket.on("disconnect", (reason) => {
       this.handleDisconnect(socket, captainId, reason);
@@ -332,6 +340,13 @@ class CaptainSocketService {
         allowShared: this.rideSettings.allowShared
       });
     });
+  }
+
+  // NEW: Handle captain acknowledging they received hide ride notification
+  handleHideRideAcknowledge(socket, captainId, data) {
+    const rideId = typeof data === 'object' ? data.rideId : data;
+    this.logger.debug(`[Socket.IO Captain] Captain ${captainId} acknowledged hiding ride ${rideId}`);
+    // Optional: You can add analytics tracking here
   }
 
   async handleLocationUpdate(socket, captainId, data) {
@@ -403,17 +418,16 @@ class CaptainSocketService {
       ).populate('passenger', 'name phoneNumber');
 
       if (ride) {
-        // Validate payment method is allowed
-        // if (!this.rideSettings.paymentMethods.includes(ride.paymentMethod)) {
-        //   this.logger.warn(`[Socket.IO Captain] Ride ${rideId} has unsupported payment method: ${ride.paymentMethod}`);
-        //   socket.emit("rideError", { 
-        //     message: `Payment method ${ride.paymentMethod} not supported. Allowed: ${this.rideSettings.paymentMethods.join(', ')}`,
-        //     rideId: rideId 
-        //   });
-        //   return;
-        // }
-
         this.logger.info(`[DB] Ride ${rideId} successfully accepted by captain ${captainId}. Status updated to 'accepted'.`);
+
+        // NEW: *** THIS IS THE KEY ADDITION *** 
+        // Notify other captains to hide this ride
+        if (this.dispatchService) {
+          this.logger.info(`[Socket.IO Captain] Notifying other captains to hide ride ${rideId}`);
+          this.dispatchService.notifyCaptainsToHideRide(rideId, captainId);
+        } else {
+          this.logger.warn(`[Socket.IO Captain] DispatchService not available - cannot notify other captains to hide ride ${rideId}`);
+        }
 
         // Stop dispatch process
         if (this.dispatchProcesses.has(rideId.toString())) {
@@ -767,13 +781,17 @@ class CaptainSocketService {
     return baseFare;
   }
 
+  // NEW: Method to set DispatchService reference
+  setDispatchService(dispatchService) {
+    this.dispatchService = dispatchService;
+    this.logger.info('[CaptainSocketService] DispatchService reference injected.');
+  }
+
   /** يسمح بحقن أو تحديث CustomerSocketService بعد الإنشاء */
   setCustomerSocketService(customerSocketService) {
     this.customerSocketService = customerSocketService;
     this.logger.info('[CaptainSocketService] customerSocketService injected.');
   }
-
-
 }
 
 module.exports = CaptainSocketService;

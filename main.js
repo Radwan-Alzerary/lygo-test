@@ -160,6 +160,9 @@ class RideHailingApp {
 
     /* 3. وفّر الدالة بعد عمل bind للسياق */
     shared.dispatchRide = this.dispatchService.dispatchRide.bind(this.dispatchService);
+    
+    // *** KEY FIX: Add DispatchService reference to shared dependencies ***
+    shared.dispatchService = this.dispatchService;
 
     /* 4. أنشئ خدمات السوكت بالدالة الجاهزة */
     this.customerSocketService = new CustomerSocketService(this.io, this.logger, shared);
@@ -175,11 +178,21 @@ class RideHailingApp {
       this.customerSocketService
     );
 
+    // *** VERIFICATION: Double-check that DispatchService is properly injected ***
+    if (this.captainSocketService.dispatchService) {
+      this.logger.info('[System] ✅ Hide Ride Feature: ENABLED - DispatchService properly injected');
+    } else {
+      this.logger.warn('[System] ❌ Hide Ride Feature: DISABLED - DispatchService not injected');
+    }
+
     /* 6. API + الخلفية */
     const apiRouter = createApiRoutes(this.logger, this.dispatchService);
     this.app.use("/api", apiRouter);
 
+    // Initialize DispatchService after all socket services are ready
+    await this.dispatchService.initialize();
     this.dispatchService.startBackgroundDispatcher();
+    
     this.logger.info("[System] All services initialized successfully.");
   }
 
@@ -200,12 +213,34 @@ class RideHailingApp {
 
     this.server.listen(PORT, () => {
       this.logger.info(`[System] Server listening on port ${PORT}`);
+      
+      // Log final service status
+      this.logServiceStatus();
     });
 
     // Setup graceful shutdown
     this.setupGracefulShutdown();
 
     this.logger.info('[System] Application started successfully.');
+  }
+
+  // NEW: Method to log service status for debugging
+  logServiceStatus() {
+    this.logger.info('[System] Final Service Status:');
+    this.logger.info(`- Online Captains: ${Object.keys(this.onlineCaptains).length}`);
+    this.logger.info(`- Online Customers: ${Object.keys(this.onlineCustomers).length}`);
+    this.logger.info(`- Active Dispatches: ${this.dispatchProcesses.size}`);
+    this.logger.info(`- Active Ride Sharing: ${this.rideSharingMap.size}`);
+    
+    if (this.dispatchService) {
+      const dispatchStats = this.dispatchService.getDispatchStats();
+      this.logger.info(`- Dispatch Settings: Initial radius ${dispatchStats.settings.initialRadiusKm}km, Max radius ${dispatchStats.settings.maxRadiusKm}km`);
+      this.logger.info(`- Active Notifications: ${dispatchStats.activeNotifications}`);
+    }
+    
+    // Verify hide ride feature
+    const hideRideEnabled = this.captainSocketService?.dispatchService ? 'ENABLED' : 'DISABLED';
+    this.logger.info(`- Hide Ride Feature: ${hideRideEnabled}`);
   }
 }
 

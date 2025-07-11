@@ -19,6 +19,8 @@ class DispatchService {
     
     // NEW: Track which captains were notified for each ride
     this.rideNotifications = new Map(); // rideId -> Set of captainIds
+    // NEW: Track current radius notifications for each ride
+    this.currentRadiusNotifications = new Map(); // rideId -> Set of captainIds for current radius
   }
 
   setSocketServices(captainSocketService, customerSocketService) {
@@ -121,6 +123,7 @@ class DispatchService {
 
     // NEW: Initialize notification tracking for this ride
     this.rideNotifications.set(rideId, new Set());
+    this.currentRadiusNotifications.set(rideId, new Set());
 
     this.logger.info(`[Dispatch] Starting dispatch for ride ${rideId}. Origin: (${origin.longitude}, ${origin.latitude})`);
     this.logger.info(`[Dispatch] Using settings - Initial radius: ${dispatch.initialRadiusKm}km, Max: ${dispatch.maxRadiusKm}km, Timeout: ${dispatch.notificationTimeout}s`);
@@ -171,6 +174,10 @@ class DispatchService {
         }
 
         this.logger.info(`[Dispatch] Ride ${rideId}: Searching radius ${radius} km (${radius}/${maxRadius}).`);
+        
+        // NEW: Clear current radius notifications at the start of each radius
+        this.currentRadiusNotifications.set(rideId, new Set());
+        
         const nearbyCaptainIds = await findNearbyCaptains(this.redisClient, this.logger, origin, radius);
 
         if (nearbyCaptainIds.length > 0) {
@@ -188,6 +195,8 @@ class DispatchService {
               
               // NEW: Track this captain was notified for this ride
               this.rideNotifications.get(rideId).add(captainId);
+              // NEW: Track this captain for current radius
+              this.currentRadiusNotifications.get(rideId).add(captainId);
 
               this.logger.info(`[Dispatch] Ride ${rideId}: Notifying captain ${captainId}`);
 
@@ -213,12 +222,14 @@ class DispatchService {
                   this.logger.warn(`[Dispatch] Failed to send newRide notification to captain ${captainId} - captain may be offline`);
                   // NEW: Remove from tracking if notification failed
                   this.rideNotifications.get(rideId).delete(captainId);
+                  this.currentRadiusNotifications.get(rideId).delete(captainId);
                 }
                 return sent;
               } else {
                 this.logger.error(`[Dispatch] CaptainSocketService not available - cannot notify captain ${captainId}`);
                 // NEW: Remove from tracking if service not available
                 this.rideNotifications.get(rideId).delete(captainId);
+                this.currentRadiusNotifications.get(rideId).delete(captainId);
                 return false;
               }
             });
@@ -238,9 +249,18 @@ class DispatchService {
             if (updatedRide && updatedRide.status === "accepted") {
               accepted = true;
               this.logger.info(`[Dispatch] Ride ${rideId} was accepted by captain ${updatedRide.driver} within ${notificationTimeout / 1000}s.`);
+              
+              // NEW: Notify all other captains to hide the ride
+              this.notifyCaptainsToHideRide(rideId, updatedRide.driver);
+              
               break; // Exit the radius expansion loop
             } else {
               this.logger.info(`[Dispatch] Ride ${rideId}: No captain accepted within ${notificationTimeout / 1000}s. Current status: ${updatedRide?.status}`);
+              
+              // NEW: إرسال hide للكابتن الذين تم إشعارهم في هذه الدائرة عند انتهاء timeout
+              if (radius < maxRadius) { // Don't hide if this is the last radius
+                this.notifyCurrentRadiusCaptainsToHide(rideId, `timeout_radius_${radius}km`);
+              }
             }
           } else {
             this.logger.info(`[Dispatch] Ride ${rideId}: All ${nearbyCaptainIds.length} captains in radius ${radius}km were already notified or offline.`);
@@ -280,6 +300,9 @@ class DispatchService {
           await finalRideState.save();
           this.logger.info(`[DB] Ride ${rideId} status updated to 'notApprove'.`);
 
+          // NEW: Hide ride from all notified captains
+          this.notifyCaptainsToHideRide(rideId, null, 'dispatch_timeout');
+
           // Notify customer
           this.customerSocketService?.emitToCustomer(finalRideState.passenger, 'rideNotApproved', {
             rideId: ride._id,
@@ -309,6 +332,9 @@ class DispatchService {
               `[Dispatch] Ride ${rideId} was accepted by captain ` +
               `${stillRequested.driver} during grace period.`,
             );
+            
+            // NEW: Notify all other captains to hide the ride
+            this.notifyCaptainsToHideRide(rideId, stillRequested.driver);
           }
         }
 
@@ -326,6 +352,9 @@ class DispatchService {
             rideDoc.cancellationReason = `No captain found within ${maxRadius}km radius after ${(Date.now() - dispatchStartTime) / 1000}s`;
             await rideDoc.save();
             this.logger.info(`[DB] Ride ${rideId} status updated to 'notApprove'.`);
+
+            // NEW: Hide ride from all notified captains
+            this.notifyCaptainsToHideRide(rideId, null, 'max_radius_reached');
 
             this.customerSocketService?.emitToCustomer(rideDoc.passenger, 'rideNotApproved', {
               rideId: rideDoc._id,
@@ -349,6 +378,9 @@ class DispatchService {
           rideToUpdate.cancellationReason = `Dispatch error: ${err.message}`;
           await rideToUpdate.save();
           this.logger.info(`[DB] Marked ride ${rideId} as 'failed' due to dispatch error.`);
+
+          // NEW: Hide ride from all notified captains due to error
+          this.notifyCaptainsToHideRide(rideId, null, 'dispatch_error');
 
           this.customerSocketService?.emitToCustomer(rideToUpdate.passenger, 'rideError', {
             rideId: rideToUpdate._id,
@@ -498,6 +530,10 @@ class DispatchService {
 
     for (const [rideId, cancelFunc] of this.dispatchProcesses.entries()) {
       this.logger.warn(`[DispatchService] Emergency stopping dispatch for ride ${rideId}`);
+      
+      // NEW: Hide ride from all notified captains before stopping
+      this.notifyCaptainsToHideRide(rideId, null, 'emergency_stop');
+      
       cancelFunc();
     }
 
@@ -507,6 +543,7 @@ class DispatchService {
     // NEW: Clean up all notification tracking
     const trackedRides = Array.from(this.rideNotifications.keys());
     this.rideNotifications.clear();
+    this.currentRadiusNotifications.clear();
     this.logger.info(`[DispatchService] Cleaned up notification tracking for ${trackedRides.length} rides during emergency stop.`);
     
     this.logger.info('[DispatchService] All dispatch processes emergency stopped.');
@@ -525,10 +562,58 @@ class DispatchService {
       this.rideNotifications.delete(rideIdStr);
       this.logger.info(`[Dispatch] Cleaned up notification tracking for ride ${rideIdStr}. ${notifiedCount} captains were notified.`);
     }
+    
+    if (this.currentRadiusNotifications.has(rideIdStr)) {
+      this.currentRadiusNotifications.delete(rideIdStr);
+    }
+  }
+
+  // NEW: Method to notify current radius captains to hide ride (عند انتهاء timeout)
+  notifyCurrentRadiusCaptainsToHide(rideId, reason = 'timeout') {
+    const rideIdStr = rideId.toString();
+    const currentRadiusCaptains = this.currentRadiusNotifications.get(rideIdStr);
+    
+    if (!currentRadiusCaptains || currentRadiusCaptains.size === 0) {
+      this.logger.debug(`[Dispatch] No current radius captains to notify for hiding ride ${rideIdStr}`);
+      return;
+    }
+
+    let notifiedCount = 0;
+    const failedNotifications = [];
+
+    currentRadiusCaptains.forEach(captainId => {
+      if (this.captainSocketService) {
+        const sent = this.captainSocketService.emitToCaptain(captainId, "hideRide", {
+          rideId: rideId,
+          reason: reason,
+          message: this.getHideMessage(reason)
+        });
+        
+        if (sent) {
+          notifiedCount++;
+          this.logger.debug(`[Dispatch] Notified captain ${captainId} to hide ride ${rideIdStr} (reason: ${reason})`);
+        } else {
+          failedNotifications.push(captainId);
+          this.logger.warn(`[Dispatch] Failed to notify captain ${captainId} to hide ride ${rideIdStr} - captain may be offline`);
+        }
+      } else {
+        failedNotifications.push(captainId);
+        this.logger.error(`[Dispatch] CaptainSocketService not available - cannot notify captain ${captainId} to hide ride ${rideIdStr}`);
+      }
+    });
+
+    this.logger.info(`[Dispatch] Notified ${notifiedCount} current radius captains to hide ride ${rideIdStr} (reason: ${reason}). Failed: ${failedNotifications.length}`);
+    
+    if (failedNotifications.length > 0) {
+      this.logger.warn(`[Dispatch] Failed to notify current radius captains to hide ride ${rideIdStr}: ${failedNotifications.join(', ')}`);
+    }
+    
+    // Clear current radius notifications after hiding
+    this.currentRadiusNotifications.set(rideIdStr, new Set());
   }
 
   // NEW: Method to notify captains to hide a ride
-  notifyCaptainsToHideRide(rideId, excludeCaptainId = null) {
+  notifyCaptainsToHideRide(rideId, excludeCaptainId = null, reason = 'ride_taken') {
     const rideIdStr = rideId.toString();
     const notifiedCaptains = this.rideNotifications.get(rideIdStr);
     
@@ -546,13 +631,13 @@ class DispatchService {
         if (this.captainSocketService) {
           const sent = this.captainSocketService.emitToCaptain(captainId, "hideRide", {
             rideId: rideId,
-            reason: "ride_taken",
-            message: "This ride has been taken by another captain."
+            reason: reason,
+            message: this.getHideMessage(reason)
           });
           
           if (sent) {
             notifiedCount++;
-            this.logger.debug(`[Dispatch] Notified captain ${captainId} to hide ride ${rideIdStr}`);
+            this.logger.debug(`[Dispatch] Notified captain ${captainId} to hide ride ${rideIdStr} (reason: ${reason})`);
           } else {
             failedNotifications.push(captainId);
             this.logger.warn(`[Dispatch] Failed to notify captain ${captainId} to hide ride ${rideIdStr} - captain may be offline`);
@@ -564,7 +649,7 @@ class DispatchService {
       }
     });
 
-    this.logger.info(`[Dispatch] Notified ${notifiedCount} captains to hide ride ${rideIdStr}. Failed: ${failedNotifications.length}`);
+    this.logger.info(`[Dispatch] Notified ${notifiedCount} captains to hide ride ${rideIdStr} (reason: ${reason}). Failed: ${failedNotifications.length}`);
     
     if (failedNotifications.length > 0) {
       this.logger.warn(`[Dispatch] Failed to notify captains to hide ride ${rideIdStr}: ${failedNotifications.join(', ')}`);
@@ -572,6 +657,25 @@ class DispatchService {
     
     // Clean up after notifying
     this.cleanupRideNotifications(rideIdStr);
+  }
+
+  // NEW: Helper method to get hide message based on reason
+  getHideMessage(reason) {
+    const messages = {
+      'ride_taken': 'This ride has been taken by another captain.',
+      'dispatch_timeout': 'This ride request has timed out.',
+      'max_radius_reached': 'No captain found for this ride.',
+      'dispatch_error': 'An error occurred with this ride request.',
+      'emergency_stop': 'Dispatch service was stopped.',
+      'timeout': 'Searching for captains in a wider area.'
+    };
+    
+    // Check if reason contains specific radius info
+    if (reason.includes('timeout_radius_')) {
+      return 'Searching for captains in a wider area.';
+    }
+    
+    return messages[reason] || 'This ride is no longer available.';
   }
 }
 

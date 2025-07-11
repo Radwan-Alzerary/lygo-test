@@ -257,7 +257,7 @@ class CaptainSocketService {
                 pickupLocation: ride.pickupLocation.coordinates,
                 pickupName: ride.pickupLocation.locationName,
                 dropoffLocation: ride.dropoffLocation.coordinates,
-                dropoffName: ride.pickupLocation.locationName,
+                dropoffName: ride.dropoffLocation.locationName,
 
                 fare: ride.fare.amount,
                 currency: this.rideSettings.fare.currency,

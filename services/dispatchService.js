@@ -196,7 +196,7 @@ class DispatchService {
                   duration: ride.duration,
                   paymentMethod: ride.paymentMethod,
                   pickupName: ride.pickupLocation.locationName,
-                  dropoffName: ride.pickupLocation.locationName,
+                  dropoffName: ride.dropoffLocation.locationName,
                   passengerInfo: {
                     id: passenger?._id,
                     name: passenger?.name,

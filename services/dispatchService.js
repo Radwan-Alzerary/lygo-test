@@ -1,6 +1,6 @@
 const customer = require("../model/customer");
 const Ride = require("../model/ride");
-const RideSetting = require("../model/rideSetting"); // Add RideSetting import
+const RideSetting = require("../model/rideSetting");
 const { findNearbyCaptains } = require("../utils/helpers");
 
 class DispatchService {
@@ -9,18 +9,25 @@ class DispatchService {
     this.redisClient = dependencies.redisClient;
     this.onlineCaptains = dependencies.onlineCaptains;
     this.dispatchProcesses = dependencies.dispatchProcesses;
-    /** حقن/تحديث خدمات السوكِت بعد إنشائها */
-    // Socket services may be set later during initialization
+    
     this.captainSocketService = dependencies.captainSocketService || null;
     this.customerSocketService = dependencies.customerSocketService || null;
 
-    this.rideSettings = null; // Cache for ride settings
-    this.backgroundIntervalId = null; // To manage background dispatcher
+    this.rideSettings = null;
+    this.backgroundIntervalId = null;
     
-    // NEW: Track which captains were notified for each ride
+    // Enhanced tracking structures
     this.rideNotifications = new Map(); // rideId -> Set of captainIds
-    // NEW: Track current radius notifications for each ride
     this.currentRadiusNotifications = new Map(); // rideId -> Set of captainIds for current radius
+    
+    // NEW: Track active dispatches with their current radius and state
+    this.activeDispatches = new Map(); // rideId -> { radius, startTime, notifiedCaptains: Set, isWaiting: boolean }
+    
+    // NEW: Track monitoring intervals for each ride
+    this.radiusMonitoringIntervals = new Map(); // rideId -> intervalId
+    
+    // NEW: Track rides that each captain has been notified about (to prevent duplicate notifications)
+    this.captainRideHistory = new Map(); // captainId -> Set of rideIds
   }
 
   setSocketServices(captainSocketService, customerSocketService) {
@@ -30,7 +37,6 @@ class DispatchService {
   }
 
   async initialize() {
-    // Load ride settings
     await this.loadRideSettings();
     this.logger.info('[DispatchService] Dispatch service initialized with settings.');
   }
@@ -39,7 +45,6 @@ class DispatchService {
     try {
       this.rideSettings = await RideSetting.findOne({ name: "default" });
       if (!this.rideSettings) {
-        // Create default settings if none exist
         this.rideSettings = new RideSetting({});
         await this.rideSettings.save();
         this.logger.info('[DispatchService] Created default ride settings.');
@@ -48,7 +53,6 @@ class DispatchService {
       this.logCurrentSettings();
     } catch (err) {
       this.logger.error('[DispatchService] Error loading ride settings:', err);
-      // Use default values if DB fails
       this.rideSettings = {
         dispatch: {
           initialRadiusKm: 2,
@@ -56,7 +60,8 @@ class DispatchService {
           radiusIncrementKm: 1,
           notificationTimeout: 15,
           maxDispatchTime: 300,
-          graceAfterMaxRadius: 30
+          graceAfterMaxRadius: 30,
+          captainMonitoringInterval: 3 // NEW: How often to check for new captains (seconds)
         }
       };
       this.logger.warn('[DispatchService] Using fallback default settings due to DB error.');
@@ -71,13 +76,13 @@ class DispatchService {
       - Radius increment: ${dispatch.radiusIncrementKm} km
       - Notification timeout: ${dispatch.notificationTimeout} seconds
       - Max dispatch time: ${dispatch.maxDispatchTime} seconds (${dispatch.maxDispatchTime / 60} minutes)
-      - Grace after max radius: ${dispatch.graceAfterMaxRadius} seconds`);
+      - Grace after max radius: ${dispatch.graceAfterMaxRadius} seconds
+      - Captain monitoring interval: ${dispatch.captainMonitoringInterval || 3} seconds`);
   }
 
   validateDispatchSettings() {
     const dispatch = this.rideSettings.dispatch;
 
-    // Validate radius settings
     if (dispatch.initialRadiusKm <= 0 || dispatch.maxRadiusKm <= 0 || dispatch.radiusIncrementKm <= 0) {
       this.logger.error('[DispatchService] Invalid radius settings detected. All radius values must be positive.');
       return false;
@@ -88,13 +93,11 @@ class DispatchService {
       return false;
     }
 
-    // Validate timeout settings
     if (dispatch.notificationTimeout <= 0 || dispatch.maxDispatchTime <= 0 || dispatch.graceAfterMaxRadius < 0) {
       this.logger.error('[DispatchService] Invalid timeout settings detected.');
       return false;
     }
 
-    // Warn about potentially problematic settings
     if (dispatch.notificationTimeout > 60) {
       this.logger.warn('[DispatchService] Notification timeout is very high (>60s). This may lead to poor user experience.');
     }
@@ -106,13 +109,206 @@ class DispatchService {
     return true;
   }
 
+  // NEW: Method to handle captain coming online
+  async onCaptainOnline(captainId, location) {
+    this.logger.debug(`[DispatchService] Captain ${captainId} came online at location: ${JSON.stringify(location)}`);
+    
+    // Check all active dispatches to see if this captain should be notified
+    for (const [rideId, dispatchInfo] of this.activeDispatches.entries()) {
+      // Skip if captain was already notified about this ride
+      if (this.captainRideHistory.get(captainId)?.has(rideId)) {
+        continue;
+      }
+
+      // Skip if dispatch is not currently waiting (between radius expansions)
+      if (!dispatchInfo.isWaiting) {
+        continue;
+      }
+
+      try {
+        // Check if captain is within current search radius
+        const ride = await Ride.findById(rideId).select('pickupLocation status');
+        if (!ride || ride.status !== 'requested') {
+          continue;
+        }
+
+        const origin = {
+          latitude: ride.pickupLocation.coordinates[1],
+          longitude: ride.pickupLocation.coordinates[0]
+        };
+
+        // Calculate distance to captain
+        const distance = this.calculateDistance(origin, location);
+        
+        if (distance <= dispatchInfo.radius) {
+          this.logger.info(`[DispatchService] New captain ${captainId} is within ${dispatchInfo.radius}km of ride ${rideId}. Notifying...`);
+          await this.notifySingleCaptain(captainId, rideId);
+        }
+      } catch (err) {
+        this.logger.error(`[DispatchService] Error checking new captain ${captainId} for ride ${rideId}:`, err);
+      }
+    }
+  }
+
+  // NEW: Method to continuously monitor for new captains within current radius
+  startRadiusMonitoring(rideId, origin, radius) {
+    const rideIdStr = rideId.toString();
+    const monitoringInterval = (this.rideSettings.dispatch.captainMonitoringInterval || 3) * 1000;
+
+    // Clear any existing monitoring for this ride
+    this.stopRadiusMonitoring(rideId);
+
+    const intervalId = setInterval(async () => {
+      try {
+        // Check if dispatch is still active
+        if (!this.activeDispatches.has(rideIdStr)) {
+          this.stopRadiusMonitoring(rideId);
+          return;
+        }
+
+        const dispatchInfo = this.activeDispatches.get(rideIdStr);
+        
+        // Only monitor if we're currently waiting for responses
+        if (!dispatchInfo.isWaiting) {
+          return;
+        }
+
+        // Check if ride is still in requested state
+        const ride = await Ride.findById(rideId).select('status');
+        if (!ride || ride.status !== 'requested') {
+          this.stopRadiusMonitoring(rideId);
+          return;
+        }
+
+        // Find captains within current radius
+        const nearbyCaptainIds = await findNearbyCaptains(this.redisClient, this.logger, origin, radius);
+        
+        // Filter for new online captains who haven't been notified about this ride
+        const newCaptains = nearbyCaptainIds.filter(captainId => {
+          return this.onlineCaptains[captainId] && 
+                 !this.rideNotifications.get(rideIdStr)?.has(captainId);
+        });
+
+        if (newCaptains.length > 0) {
+          this.logger.info(`[DispatchService] Found ${newCaptains.length} new captains for ride ${rideId} within ${radius}km radius during monitoring`);
+          
+          // Notify new captains
+          for (const captainId of newCaptains) {
+            await this.notifySingleCaptain(captainId, rideId);
+          }
+        }
+
+      } catch (err) {
+        this.logger.error(`[DispatchService] Error in radius monitoring for ride ${rideId}:`, err);
+      }
+    }, monitoringInterval);
+
+    this.radiusMonitoringIntervals.set(rideIdStr, intervalId);
+    this.logger.debug(`[DispatchService] Started radius monitoring for ride ${rideId} with ${monitoringInterval/1000}s interval`);
+  }
+
+  // NEW: Stop radius monitoring for a specific ride
+  stopRadiusMonitoring(rideId) {
+    const rideIdStr = rideId.toString();
+    const intervalId = this.radiusMonitoringIntervals.get(rideIdStr);
+    
+    if (intervalId) {
+      clearInterval(intervalId);
+      this.radiusMonitoringIntervals.delete(rideIdStr);
+      this.logger.debug(`[DispatchService] Stopped radius monitoring for ride ${rideId}`);
+    }
+  }
+
+  // NEW: Notify a single captain about a ride
+  async notifySingleCaptain(captainId, rideId) {
+    try {
+      const ride = await Ride.findById(rideId);
+      if (!ride || ride.status !== 'requested') {
+        return false;
+      }
+
+      const passenger = await customer.findById(ride.passenger)
+        .select("name phoneNumber")
+        .lean();
+
+      // Track this notification
+      if (!this.rideNotifications.has(rideId.toString())) {
+        this.rideNotifications.set(rideId.toString(), new Set());
+      }
+      if (!this.currentRadiusNotifications.has(rideId.toString())) {
+        this.currentRadiusNotifications.set(rideId.toString(), new Set());
+      }
+      if (!this.captainRideHistory.has(captainId)) {
+        this.captainRideHistory.set(captainId, new Set());
+      }
+
+      this.rideNotifications.get(rideId.toString()).add(captainId);
+      this.currentRadiusNotifications.get(rideId.toString()).add(captainId);
+      this.captainRideHistory.get(captainId).add(rideId.toString());
+
+      if (this.captainSocketService) {
+        const sent = this.captainSocketService.emitToCaptain(captainId, "newRide", {
+          rideId: ride._id,
+          pickupLocation: ride.pickupLocation.coordinates,
+          dropoffLocation: ride.dropoffLocation.coordinates,
+          fare: ride.fare.amount,
+          currency: ride.fare.currency,
+          distance: ride.distance,
+          duration: ride.duration,
+          paymentMethod: ride.paymentMethod,
+          pickupName: ride.pickupLocation.locationName,
+          dropoffName: ride.dropoffLocation.locationName,
+          passengerInfo: {
+            id: passenger?._id,
+            name: passenger?.name,
+            phoneNumber: passenger?.phoneNumber,
+          }
+        });
+
+        if (sent) {
+          this.logger.info(`[DispatchService] Successfully notified captain ${captainId} about ride ${rideId}`);
+          return true;
+        } else {
+          this.logger.warn(`[DispatchService] Failed to notify captain ${captainId} about ride ${rideId} - captain may be offline`);
+          // Remove from tracking if notification failed
+          this.rideNotifications.get(rideId.toString()).delete(captainId);
+          this.currentRadiusNotifications.get(rideId.toString()).delete(captainId);
+          this.captainRideHistory.get(captainId).delete(rideId.toString());
+          return false;
+        }
+      } else {
+        this.logger.error(`[DispatchService] CaptainSocketService not available`);
+        return false;
+      }
+    } catch (err) {
+      this.logger.error(`[DispatchService] Error notifying captain ${captainId} about ride ${rideId}:`, err);
+      return false;
+    }
+  }
+
+  // NEW: Calculate distance between two points (simple approximation)
+  calculateDistance(point1, point2) {
+    const R = 6371; // Earth's radius in kilometers
+    const dLat = this.deg2rad(point2.latitude - point1.latitude);
+    const dLon = this.deg2rad(point2.longitude - point1.longitude);
+    const a = 
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(this.deg2rad(point1.latitude)) * Math.cos(this.deg2rad(point2.latitude)) * 
+      Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const distance = R * c; // Distance in km
+    return distance;
+  }
+
+  deg2rad(deg) {
+    return deg * (Math.PI/180);
+  }
+
   async dispatchRide(ride, origin) {
-    // Ensure settings are loaded
     if (!this.rideSettings) {
       await this.loadRideSettings();
     }
 
-    // Validate settings before dispatch
     if (!this.validateDispatchSettings()) {
       this.logger.error(`[Dispatch] Invalid dispatch settings. Cannot dispatch ride ${ride._id}`);
       return;
@@ -121,41 +317,44 @@ class DispatchService {
     const rideId = ride._id.toString();
     const dispatch = this.rideSettings.dispatch;
 
-    // NEW: Initialize notification tracking for this ride
+    // Initialize tracking
     this.rideNotifications.set(rideId, new Set());
     this.currentRadiusNotifications.set(rideId, new Set());
+    
+    // NEW: Initialize active dispatch tracking
+    this.activeDispatches.set(rideId, {
+      radius: dispatch.initialRadiusKm,
+      startTime: Date.now(),
+      notifiedCaptains: new Set(),
+      isWaiting: false
+    });
 
-    this.logger.info(`[Dispatch] Starting dispatch for ride ${rideId}. Origin: (${origin.longitude}, ${origin.latitude})`);
+    this.logger.info(`[Dispatch] Starting enhanced dispatch for ride ${rideId}. Origin: (${origin.longitude}, ${origin.latitude})`);
     this.logger.info(`[Dispatch] Using settings - Initial radius: ${dispatch.initialRadiusKm}km, Max: ${dispatch.maxRadiusKm}km, Timeout: ${dispatch.notificationTimeout}s`);
 
-    let radius = dispatch.initialRadiusKm; // Starting radius from settings
-    const maxRadius = dispatch.maxRadiusKm; // Maximum search radius from settings
-    const radiusIncrement = dispatch.radiusIncrementKm; // Radius increment from settings
-    const notificationTimeout = dispatch.notificationTimeout * 1000; // Convert to milliseconds
-    const maxDispatchTime = dispatch.maxDispatchTime * 1000; // Convert to milliseconds
-    const graceAfterMaxRadius = dispatch.graceAfterMaxRadius * 1000; // Convert to milliseconds
+    let radius = dispatch.initialRadiusKm;
+    const maxRadius = dispatch.maxRadiusKm;
+    const radiusIncrement = dispatch.radiusIncrementKm;
+    const notificationTimeout = dispatch.notificationTimeout * 1000;
+    const maxDispatchTime = dispatch.maxDispatchTime * 1000;
+    const graceAfterMaxRadius = dispatch.graceAfterMaxRadius * 1000;
 
     const dispatchStartTime = Date.now();
-
     let cancelDispatch = false;
-    let accepted = false; // Flag to track if ride was accepted
+    let accepted = false;
 
     const passenger = await customer.findById(ride.passenger)
       .select("name phoneNumber")
-      .lean();               // استعلام خفيف بدون وثائق Mongoose كاملة
+      .lean();
 
-    // Cancellation function for this specific dispatch process
+    // Cancellation function
     const cancelFunc = () => {
       this.logger.warn(`[Dispatch] Cancellation requested externally for ride ${rideId}.`);
       cancelDispatch = true;
     };
     this.dispatchProcesses.set(rideId, cancelFunc);
-    this.logger.debug(`[Dispatch] Registered cancellation function for ride ${rideId}`);
 
     try {
-      // Keep track of all captains notified across all radius expansions
-      const globalNotifiedCaptains = new Set();
-
       while (!cancelDispatch && !accepted && radius <= maxRadius) {
         // Check for overall timeout
         const elapsedTime = Date.now() - dispatchStartTime;
@@ -165,7 +364,7 @@ class DispatchService {
           break;
         }
 
-        // Check if the ride object still exists and is 'requested' before searching
+        // Check ride status
         const currentRideState = await Ride.findById(rideId).select('status');
         if (!currentRideState || currentRideState.status !== 'requested') {
           this.logger.warn(`[Dispatch] Ride ${rideId} is no longer in 'requested' state (current: ${currentRideState?.status}). Stopping dispatch.`);
@@ -175,13 +374,19 @@ class DispatchService {
 
         this.logger.info(`[Dispatch] Ride ${rideId}: Searching radius ${radius} km (${radius}/${maxRadius}).`);
         
-        // NEW: Clear current radius notifications at the start of each radius
+        // Update active dispatch info
+        this.activeDispatches.get(rideId).radius = radius;
+        this.activeDispatches.get(rideId).isWaiting = false;
+        
+        // Clear current radius notifications
         this.currentRadiusNotifications.set(rideId, new Set());
         
+        // Find captains in current radius
         const nearbyCaptainIds = await findNearbyCaptains(this.redisClient, this.logger, origin, radius);
 
         if (nearbyCaptainIds.length > 0) {
-          // Filter out already notified captains and offline captains
+          // Filter for new online captains
+          const globalNotifiedCaptains = this.rideNotifications.get(rideId);
           const newOnlineCaptains = nearbyCaptainIds.filter(captainId =>
             this.onlineCaptains[captainId] && !globalNotifiedCaptains.has(captainId)
           );
@@ -189,76 +394,40 @@ class DispatchService {
           if (newOnlineCaptains.length > 0) {
             this.logger.info(`[Dispatch] Ride ${rideId}: Found ${newOnlineCaptains.length} new online captains within ${radius}km radius.`);
 
-            // Send notifications to ALL captains simultaneously
-            const notificationPromises = newOnlineCaptains.map(captainId => {
-              globalNotifiedCaptains.add(captainId);
-              
-              // NEW: Track this captain was notified for this ride
-              this.rideNotifications.get(rideId).add(captainId);
-              // NEW: Track this captain for current radius
-              this.currentRadiusNotifications.get(rideId).add(captainId);
+            // Notify all new captains
+            const notificationPromises = newOnlineCaptains.map(captainId => 
+              this.notifySingleCaptain(captainId, rideId)
+            );
 
-              this.logger.info(`[Dispatch] Ride ${rideId}: Notifying captain ${captainId}`);
-
-              if (this.captainSocketService) {
-                const sent = this.captainSocketService.emitToCaptain(captainId, "newRide", {
-                  rideId: ride._id,
-                  pickupLocation: ride.pickupLocation.coordinates,
-                  dropoffLocation: ride.dropoffLocation.coordinates,
-                  fare: ride.fare.amount,
-                  currency: ride.fare.currency,
-                  distance: ride.distance,
-                  duration: ride.duration,
-                  paymentMethod: ride.paymentMethod,
-                  pickupName: ride.pickupLocation.locationName,
-                  dropoffName: ride.dropoffLocation.locationName,
-                  passengerInfo: {
-                    id: passenger?._id,
-                    name: passenger?.name,
-                    phoneNumber: passenger?.phoneNumber,
-                  }
-                });
-                if (!sent) {
-                  this.logger.warn(`[Dispatch] Failed to send newRide notification to captain ${captainId} - captain may be offline`);
-                  // NEW: Remove from tracking if notification failed
-                  this.rideNotifications.get(rideId).delete(captainId);
-                  this.currentRadiusNotifications.get(rideId).delete(captainId);
-                }
-                return sent;
-              } else {
-                this.logger.error(`[Dispatch] CaptainSocketService not available - cannot notify captain ${captainId}`);
-                // NEW: Remove from tracking if service not available
-                this.rideNotifications.get(rideId).delete(captainId);
-                this.currentRadiusNotifications.get(rideId).delete(captainId);
-                return false;
-              }
-            });
-
-            // Wait for all notifications to be sent
             const notificationResults = await Promise.all(notificationPromises);
             const successfulNotifications = notificationResults.filter(result => result).length;
 
             this.logger.info(`[Dispatch] Ride ${rideId}: Successfully notified ${successfulNotifications}/${newOnlineCaptains.length} captains in radius ${radius}km`);
 
-            // Wait for the notification timeout period to see if any captain accepts
-            this.logger.debug(`[Dispatch] Ride ${rideId}: Waiting ${notificationTimeout / 1000}s for captains to respond.`);
+            // NEW: Start continuous monitoring for new captains
+            this.activeDispatches.get(rideId).isWaiting = true;
+            this.startRadiusMonitoring(rideId, origin, radius);
+
+            // Wait for notification timeout
+            this.logger.debug(`[Dispatch] Ride ${rideId}: Waiting ${notificationTimeout / 1000}s for captains to respond (with continuous monitoring).`);
             await new Promise((resolve) => setTimeout(resolve, notificationTimeout));
 
-            // Check if the ride was accepted during the wait period
+            // Stop monitoring for this radius
+            this.stopRadiusMonitoring(rideId);
+            this.activeDispatches.get(rideId).isWaiting = false;
+
+            // Check if ride was accepted
             const updatedRide = await Ride.findById(rideId).select('status driver');
             if (updatedRide && updatedRide.status === "accepted") {
               accepted = true;
               this.logger.info(`[Dispatch] Ride ${rideId} was accepted by captain ${updatedRide.driver} within ${notificationTimeout / 1000}s.`);
               
-              // NEW: Notify all other captains to hide the ride
               this.notifyCaptainsToHideRide(rideId, updatedRide.driver);
-              
-              break; // Exit the radius expansion loop
+              break;
             } else {
               this.logger.info(`[Dispatch] Ride ${rideId}: No captain accepted within ${notificationTimeout / 1000}s. Current status: ${updatedRide?.status}`);
               
-              // NEW: إرسال hide للكابتن الذين تم إشعارهم في هذه الدائرة عند انتهاء timeout
-              if (radius < maxRadius) { // Don't hide if this is the last radius
+              if (radius < maxRadius) {
                 this.notifyCurrentRadiusCaptainsToHide(rideId, `timeout_radius_${radius}km`);
               }
             }
@@ -269,26 +438,23 @@ class DispatchService {
           this.logger.info(`[Dispatch] Ride ${rideId}: No captains found within radius ${radius} km.`);
         }
 
-        // Increase radius only if not accepted and not cancelled
+        // Increase radius
         if (!accepted && !cancelDispatch) {
           radius += radiusIncrement;
           this.logger.info(`[Dispatch] Ride ${rideId}: Increasing search radius to ${radius} km.`);
 
-          // Small delay before expanding radius to avoid overwhelming the system
           if (radius <= maxRadius) {
-            await new Promise((resolve) => setTimeout(resolve, 2000)); // 2 second delay before expanding
+            await new Promise((resolve) => setTimeout(resolve, 2000));
           }
         }
-      } // End while loop
+      }
 
-      // --- Handle Dispatch Outcome ---
+      // Handle dispatch outcome (same as before but with cleanup)
       const finalRideState = await Ride.findById(rideId);
 
       if (accepted) {
-        // Ride was accepted by someone, log success
         this.logger.info(`[Dispatch] Ride ${rideId} successfully accepted by captain ${finalRideState?.driver}. Dispatch process complete.`);
       } else if (cancelDispatch) {
-        // Dispatch was cancelled externally or timed out
         this.logger.warn(`[Dispatch] Dispatch for ride ${rideId} was cancelled or timed out.`);
 
         if (Date.now() - dispatchStartTime >= maxDispatchTime && finalRideState && finalRideState.status === 'requested') {
@@ -298,12 +464,9 @@ class DispatchService {
           finalRideState.dispatchEndTime = new Date();
           finalRideState.cancellationReason = `Dispatch timeout after ${maxDispatchTime / 1000}s`;
           await finalRideState.save();
-          this.logger.info(`[DB] Ride ${rideId} status updated to 'notApprove'.`);
 
-          // NEW: Hide ride from all notified captains
           this.notifyCaptainsToHideRide(rideId, null, 'dispatch_timeout');
 
-          // Notify customer
           this.customerSocketService?.emitToCustomer(finalRideState.passenger, 'rideNotApproved', {
             rideId: ride._id,
             message: "We couldn't find a nearby captain in time. Please try requesting again.",
@@ -312,13 +475,9 @@ class DispatchService {
           });
         }
       } else if (radius > maxRadius && !cancelDispatch && !accepted) {
-        // Max radius reached — wait a final grace period before giving up
-        this.logger.warn(
-          `[Dispatch] Ride ${rideId}: reached max radius (${maxRadius} km). ` +
-          `Holding for an extra ${graceAfterMaxRadius / 1000}s before aborting.`,
-        );
+        // Handle max radius reached (same logic as before)
+        this.logger.warn(`[Dispatch] Ride ${rideId}: reached max radius (${maxRadius} km). Holding for an extra ${graceAfterMaxRadius / 1000}s before aborting.`);
 
-        // Check periodically during grace period
         const pollInterval = 5 * 1000;
         const giveUpAt = Date.now() + graceAfterMaxRadius;
 
@@ -328,21 +487,13 @@ class DispatchService {
           const stillRequested = await Ride.findById(rideId).select('status driver');
           if (stillRequested?.status === 'accepted') {
             accepted = true;
-            this.logger.info(
-              `[Dispatch] Ride ${rideId} was accepted by captain ` +
-              `${stillRequested.driver} during grace period.`,
-            );
-            
-            // NEW: Notify all other captains to hide the ride
+            this.logger.info(`[Dispatch] Ride ${rideId} was accepted by captain ${stillRequested.driver} during grace period.`);
             this.notifyCaptainsToHideRide(rideId, stillRequested.driver);
           }
         }
 
         if (!accepted && !cancelDispatch) {
-          this.logger.warn(
-            `[Dispatch] Ride ${rideId}: no acceptance after extra ${graceAfterMaxRadius / 1000}s. ` +
-            `Updating status to 'notApprove'.`,
-          );
+          this.logger.warn(`[Dispatch] Ride ${rideId}: no acceptance after extra ${graceAfterMaxRadius / 1000}s. Updating status to 'notApprove'.`);
 
           const rideDoc = await Ride.findById(rideId);
           if (rideDoc && rideDoc.status === 'requested') {
@@ -351,9 +502,7 @@ class DispatchService {
             rideDoc.dispatchEndTime = new Date();
             rideDoc.cancellationReason = `No captain found within ${maxRadius}km radius after ${(Date.now() - dispatchStartTime) / 1000}s`;
             await rideDoc.save();
-            this.logger.info(`[DB] Ride ${rideId} status updated to 'notApprove'.`);
 
-            // NEW: Hide ride from all notified captains
             this.notifyCaptainsToHideRide(rideId, null, 'max_radius_reached');
 
             this.customerSocketService?.emitToCustomer(rideDoc.passenger, 'rideNotApproved', {
@@ -377,9 +526,7 @@ class DispatchService {
           rideToUpdate.dispatchEndTime = new Date();
           rideToUpdate.cancellationReason = `Dispatch error: ${err.message}`;
           await rideToUpdate.save();
-          this.logger.info(`[DB] Marked ride ${rideId} as 'failed' due to dispatch error.`);
 
-          // NEW: Hide ride from all notified captains due to error
           this.notifyCaptainsToHideRide(rideId, null, 'dispatch_error');
 
           this.customerSocketService?.emitToCustomer(rideToUpdate.passenger, 'rideError', {
@@ -391,31 +538,32 @@ class DispatchService {
         this.logger.error(`[Dispatch] Failed to update ride ${rideId} status after dispatch error:`, saveErr);
       }
     } finally {
-      // Clean up Dispatch Process
+      // Enhanced cleanup
+      this.stopRadiusMonitoring(rideId);
+      
       if (this.dispatchProcesses.has(rideId)) {
         this.dispatchProcesses.delete(rideId);
-        this.logger.info(`[Dispatch] Cleaned up dispatch process entry for ride ${rideId}.`);
-        this.logger.debug(`[Dispatch] Active dispatch processes: ${Array.from(this.dispatchProcesses.keys())}`);
       }
       
-      // NEW: Clean up notification tracking only if ride was not accepted
+      // Clean up active dispatch tracking
+      this.activeDispatches.delete(rideId);
+      
       const finalRide = await Ride.findById(rideId).select('status');
       if (!finalRide || finalRide.status !== 'accepted') {
         this.cleanupRideNotifications(rideId);
       }
-      // Note: If ride was accepted, cleanup will be handled by notifyCaptainsToHideRide method
+      
+      this.logger.info(`[Dispatch] Cleaned up all tracking for ride ${rideId}.`);
     }
   }
 
-  // Background dispatcher to check for missed rides
+  // Rest of the methods remain the same as in the original code...
   startBackgroundDispatcher() {
-    // Use a configurable interval, but with a sensible default
-    const dispatchCheckInterval = (this.rideSettings?.dispatch?.notificationTimeout || 15) * 2 * 1000; // 2x notification timeout, minimum 30s
-    const finalInterval = Math.max(30000, Math.min(dispatchCheckInterval, 120000)); // Between 30s and 2 minutes
+    const dispatchCheckInterval = (this.rideSettings?.dispatch?.notificationTimeout || 15) * 2 * 1000;
+    const finalInterval = Math.max(30000, Math.min(dispatchCheckInterval, 120000));
 
     this.logger.info(`[Dispatch] Background dispatcher check interval set to ${finalInterval / 1000}s.`);
 
-    // Clear any existing interval
     if (this.backgroundIntervalId) {
       clearInterval(this.backgroundIntervalId);
     }
@@ -423,24 +571,21 @@ class DispatchService {
     this.backgroundIntervalId = setInterval(async () => {
       this.logger.debug('[Dispatch Interval] Checking for requested rides needing dispatch...');
       try {
-        // Find rides that are 'requested' but NOT currently being handled by an active dispatch process
         const ridesToDispatch = await Ride.find({
           status: 'requested',
-          isDispatching: { $ne: true }, // Also check the isDispatching flag
-          _id: { $nin: Array.from(this.dispatchProcesses.keys()) } // Find rides not in the active dispatch map
+          isDispatching: { $ne: true },
+          _id: { $nin: Array.from(this.dispatchProcesses.keys()) }
         });
 
         if (ridesToDispatch.length > 0) {
           this.logger.info(`[Dispatch Interval] Found ${ridesToDispatch.length} requested rides potentially needing dispatch: ${ridesToDispatch.map(r => r._id).join(', ')}`);
 
           for (const ride of ridesToDispatch) {
-            // Double check if a process was somehow created just now
             if (this.dispatchProcesses.has(ride._id.toString())) {
               this.logger.warn(`[Dispatch Interval] Dispatch process for ride ${ride._id} already exists. Skipping.`);
               continue;
             }
 
-            // Check if ride is too old (older than max dispatch time + grace period)
             const maxAge = (this.rideSettings?.dispatch?.maxDispatchTime || 300) + (this.rideSettings?.dispatch?.graceAfterMaxRadius || 30);
             const rideAge = (Date.now() - new Date(ride.createdAt)) / 1000;
 
@@ -460,7 +605,6 @@ class DispatchService {
 
             this.logger.info(`[Dispatch Interval] Initiating dispatch for ride ${ride._id} (age: ${Math.round(rideAge)}s)`);
 
-            // Mark as dispatching to prevent duplicate processing
             ride.isDispatching = true;
             await ride.save();
 
@@ -469,7 +613,6 @@ class DispatchService {
               longitude: ride.pickupLocation.coordinates[0],
             };
 
-            // Start dispatch (don't await - let it run in background)
             this.dispatchRide(ride, originCoords);
           }
         } else {
@@ -481,7 +624,6 @@ class DispatchService {
     }, finalInterval);
   }
 
-  // Stop background dispatcher
   stopBackgroundDispatcher() {
     if (this.backgroundIntervalId) {
       clearInterval(this.backgroundIntervalId);
@@ -490,21 +632,16 @@ class DispatchService {
     }
   }
 
-  // Refresh settings (can be called externally)
   async refreshSettings() {
     this.logger.info('[DispatchService] Refreshing ride settings...');
     await this.loadRideSettings();
-
-    // Restart background dispatcher with new settings
     this.startBackgroundDispatcher();
   }
 
-  // Get current settings (for external use)
   getCurrentSettings() {
     return this.rideSettings;
   }
 
-  // Get dispatch statistics
   getDispatchStats() {
     const activeProcesses = this.dispatchProcesses.size;
     const settings = this.rideSettings?.dispatch || {};
@@ -512,35 +649,45 @@ class DispatchService {
     return {
       activeDispatches: activeProcesses,
       activeRideIds: Array.from(this.dispatchProcesses.keys()),
-      activeNotifications: this.rideNotifications.size, // NEW: Include notification tracking stats
+      activeNotifications: this.rideNotifications.size,
+      activeDispatchDetails: Array.from(this.activeDispatches.entries()).map(([rideId, info]) => ({
+        rideId,
+        currentRadius: info.radius,
+        isWaiting: info.isWaiting,
+        elapsedTime: Math.round((Date.now() - info.startTime) / 1000)
+      })),
+      monitoringIntervals: this.radiusMonitoringIntervals.size,
       settings: {
         initialRadiusKm: settings.initialRadiusKm,
         maxRadiusKm: settings.maxRadiusKm,
         radiusIncrementKm: settings.radiusIncrementKm,
         notificationTimeoutSeconds: settings.notificationTimeout,
         maxDispatchTimeSeconds: settings.maxDispatchTime,
-        graceAfterMaxRadiusSeconds: settings.graceAfterMaxRadius
+        graceAfterMaxRadiusSeconds: settings.graceAfterMaxRadius,
+        captainMonitoringIntervalSeconds: settings.captainMonitoringInterval || 3
       }
     };
   }
 
-  // Emergency stop all dispatch processes
   emergencyStopAllDispatches() {
     this.logger.warn('[DispatchService] Emergency stop requested for all dispatch processes.');
 
     for (const [rideId, cancelFunc] of this.dispatchProcesses.entries()) {
       this.logger.warn(`[DispatchService] Emergency stopping dispatch for ride ${rideId}`);
-      
-      // NEW: Hide ride from all notified captains before stopping
       this.notifyCaptainsToHideRide(rideId, null, 'emergency_stop');
-      
+      this.stopRadiusMonitoring(rideId);
       cancelFunc();
     }
 
-    // Clear the processes map
     this.dispatchProcesses.clear();
+    this.activeDispatches.clear();
+    
+    // Clear all monitoring intervals
+    for (const intervalId of this.radiusMonitoringIntervals.values()) {
+      clearInterval(intervalId);
+    }
+    this.radiusMonitoringIntervals.clear();
 
-    // NEW: Clean up all notification tracking
     const trackedRides = Array.from(this.rideNotifications.keys());
     this.rideNotifications.clear();
     this.currentRadiusNotifications.clear();
@@ -549,12 +696,10 @@ class DispatchService {
     this.logger.info('[DispatchService] All dispatch processes emergency stopped.');
   }
 
-  // NEW: Method to get notified captains for a ride
   getNotifiedCaptains(rideId) {
     return this.rideNotifications.get(rideId.toString()) || new Set();
   }
 
-  // NEW: Method to clean up notification tracking
   cleanupRideNotifications(rideId) {
     const rideIdStr = rideId.toString();
     if (this.rideNotifications.has(rideIdStr)) {
@@ -568,7 +713,6 @@ class DispatchService {
     }
   }
 
-  // NEW: Method to notify current radius captains to hide ride (عند انتهاء timeout)
   notifyCurrentRadiusCaptainsToHide(rideId, reason = 'timeout') {
     const rideIdStr = rideId.toString();
     const currentRadiusCaptains = this.currentRadiusNotifications.get(rideIdStr);
@@ -608,11 +752,9 @@ class DispatchService {
       this.logger.warn(`[Dispatch] Failed to notify current radius captains to hide ride ${rideIdStr}: ${failedNotifications.join(', ')}`);
     }
     
-    // Clear current radius notifications after hiding
     this.currentRadiusNotifications.set(rideIdStr, new Set());
   }
 
-  // NEW: Method to notify captains to hide a ride
   notifyCaptainsToHideRide(rideId, excludeCaptainId = null, reason = 'ride_taken') {
     const rideIdStr = rideId.toString();
     const notifiedCaptains = this.rideNotifications.get(rideIdStr);
@@ -626,7 +768,6 @@ class DispatchService {
     const failedNotifications = [];
 
     notifiedCaptains.forEach(captainId => {
-      // Don't notify the captain who accepted the ride
       if (captainId !== excludeCaptainId) {
         if (this.captainSocketService) {
           const sent = this.captainSocketService.emitToCaptain(captainId, "hideRide", {
@@ -655,11 +796,9 @@ class DispatchService {
       this.logger.warn(`[Dispatch] Failed to notify captains to hide ride ${rideIdStr}: ${failedNotifications.join(', ')}`);
     }
     
-    // Clean up after notifying
     this.cleanupRideNotifications(rideIdStr);
   }
 
-  // NEW: Helper method to get hide message based on reason
   getHideMessage(reason) {
     const messages = {
       'ride_taken': 'This ride has been taken by another captain.',
@@ -670,12 +809,19 @@ class DispatchService {
       'timeout': 'Searching for captains in a wider area.'
     };
     
-    // Check if reason contains specific radius info
     if (reason.includes('timeout_radius_')) {
       return 'Searching for captains in a wider area.';
     }
     
     return messages[reason] || 'This ride is no longer available.';
+  }
+
+  // NEW: Clean up captain ride history when captain goes offline
+  onCaptainOffline(captainId) {
+    if (this.captainRideHistory.has(captainId)) {
+      this.captainRideHistory.delete(captainId);
+      this.logger.debug(`[DispatchService] Cleaned up ride history for offline captain ${captainId}`);
+    }
   }
 }
 

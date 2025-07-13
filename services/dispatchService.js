@@ -113,6 +113,13 @@ class DispatchService {
   async onCaptainOnline(captainId, location) {
     this.logger.debug(`[DispatchService] Captain ${captainId} came online at location: ${JSON.stringify(location)}`);
     
+    // Check if captain is available (not busy with other rides)
+    const isAvailable = await this.filterAvailableCaptains([captainId]);
+    if (isAvailable.length === 0) {
+      this.logger.debug(`[DispatchService] Captain ${captainId} is busy, not checking for rides`);
+      return;
+    }
+    
     // Check all active dispatches to see if this captain should be notified
     for (const [rideId, dispatchInfo] of this.activeDispatches.entries()) {
       // Skip if captain was already notified about this ride
@@ -141,7 +148,7 @@ class DispatchService {
         const distance = this.calculateDistance(origin, location);
         
         if (distance <= dispatchInfo.radius) {
-          this.logger.info(`[DispatchService] New captain ${captainId} is within ${dispatchInfo.radius}km of ride ${rideId}. Notifying...`);
+          this.logger.info(`[DispatchService] New available captain ${captainId} is within ${dispatchInfo.radius}km of ride ${rideId}. Notifying...`);
           await this.notifySingleCaptain(captainId, rideId);
         }
       } catch (err) {
@@ -183,14 +190,14 @@ class DispatchService {
         // Find captains within current radius
         const nearbyCaptainIds = await findNearbyCaptains(this.redisClient, this.logger, origin, radius);
         
-        // Filter for new online captains who haven't been notified about this ride
-        const newCaptains = nearbyCaptainIds.filter(captainId => {
-          return this.onlineCaptains[captainId] && 
-                 !this.rideNotifications.get(rideIdStr)?.has(captainId);
+        // Filter for available captains who haven't been notified about this ride
+        const availableCaptains = await this.filterAvailableCaptains(nearbyCaptainIds, rideId);
+        const newCaptains = availableCaptains.filter(captainId => {
+          return !this.rideNotifications.get(rideIdStr)?.has(captainId);
         });
 
         if (newCaptains.length > 0) {
-          this.logger.info(`[DispatchService] Found ${newCaptains.length} new captains for ride ${rideId} within ${radius}km radius during monitoring`);
+          this.logger.info(`[DispatchService] Found ${newCaptains.length} new available captains for ride ${rideId} within ${radius}km radius during monitoring`);
           
           // Notify new captains
           for (const captainId of newCaptains) {
@@ -304,6 +311,47 @@ class DispatchService {
     return deg * (Math.PI/180);
   }
 
+  // NEW: Filter captains to get only available ones (online and not busy)
+  async filterAvailableCaptains(captainIds, currentRideId = null) {
+    const availableCaptains = [];
+    
+    for (const captainId of captainIds) {
+      // Check if captain is online
+      if (!this.onlineCaptains[captainId]) {
+        this.logger.debug(`[DispatchService] Captain ${captainId} is offline`);
+        continue;
+      }
+
+      try {
+        // Check if captain is currently busy with another ride
+        const currentRide = await Ride.findOne({
+          driver: captainId,
+          status: { $in: ['accepted', 'onWay', 'arrived', 'onRide'] }
+        }).select('_id status');
+
+        if (currentRide) {
+          // If it's the same ride as the current one being dispatched, consider captain as available
+          if (currentRideId && currentRide._id.toString() === currentRideId.toString()) {
+            this.logger.debug(`[DispatchService] Captain ${captainId} is assigned to current ride ${currentRideId}`);
+            availableCaptains.push(captainId);
+          } else {
+            this.logger.debug(`[DispatchService] Captain ${captainId} is busy with ride ${currentRide._id} (status: ${currentRide.status})`);
+          }
+        } else {
+          // Captain is not busy with any ride
+          availableCaptains.push(captainId);
+        }
+      } catch (err) {
+        this.logger.error(`[DispatchService] Error checking captain ${captainId} availability:`, err);
+        // In case of error, assume captain is available to avoid blocking
+        availableCaptains.push(captainId);
+      }
+    }
+
+    this.logger.debug(`[DispatchService] Filtered ${availableCaptains.length} available captains from ${captainIds.length} total captains`);
+    return availableCaptains;
+  }
+
   async dispatchRide(ride, origin) {
     if (!this.rideSettings) {
       await this.loadRideSettings();
@@ -385,24 +433,25 @@ class DispatchService {
         const nearbyCaptainIds = await findNearbyCaptains(this.redisClient, this.logger, origin, radius);
 
         if (nearbyCaptainIds.length > 0) {
-          // Filter for new online captains
+          // Filter for available captains (online and not busy)
           const globalNotifiedCaptains = this.rideNotifications.get(rideId);
-          const newOnlineCaptains = nearbyCaptainIds.filter(captainId =>
-            this.onlineCaptains[captainId] && !globalNotifiedCaptains.has(captainId)
+          const availableCaptains = await this.filterAvailableCaptains(nearbyCaptainIds, rideId);
+          const newAvailableCaptains = availableCaptains.filter(captainId =>
+            !globalNotifiedCaptains.has(captainId)
           );
 
-          if (newOnlineCaptains.length > 0) {
-            this.logger.info(`[Dispatch] Ride ${rideId}: Found ${newOnlineCaptains.length} new online captains within ${radius}km radius.`);
+          if (newAvailableCaptains.length > 0) {
+            this.logger.info(`[Dispatch] Ride ${rideId}: Found ${newAvailableCaptains.length} new available captains within ${radius}km radius.`);
 
-            // Notify all new captains
-            const notificationPromises = newOnlineCaptains.map(captainId => 
+            // Notify all new available captains
+            const notificationPromises = newAvailableCaptains.map(captainId => 
               this.notifySingleCaptain(captainId, rideId)
             );
 
             const notificationResults = await Promise.all(notificationPromises);
             const successfulNotifications = notificationResults.filter(result => result).length;
 
-            this.logger.info(`[Dispatch] Ride ${rideId}: Successfully notified ${successfulNotifications}/${newOnlineCaptains.length} captains in radius ${radius}km`);
+            this.logger.info(`[Dispatch] Ride ${rideId}: Successfully notified ${successfulNotifications}/${newAvailableCaptains.length} available captains in radius ${radius}km`);
 
             // NEW: Start continuous monitoring for new captains
             this.activeDispatches.get(rideId).isWaiting = true;
@@ -432,7 +481,7 @@ class DispatchService {
               }
             }
           } else {
-            this.logger.info(`[Dispatch] Ride ${rideId}: All ${nearbyCaptainIds.length} captains in radius ${radius}km were already notified or offline.`);
+            this.logger.info(`[Dispatch] Ride ${rideId}: All ${availableCaptains.length} available captains in radius ${radius}km were already notified. Total found: ${nearbyCaptainIds.length}`);
           }
         } else {
           this.logger.info(`[Dispatch] Ride ${rideId}: No captains found within radius ${radius} km.`);
@@ -449,7 +498,7 @@ class DispatchService {
         }
       }
 
-      // Handle dispatch outcome (same as before but with cleanup)
+      // Handle dispatch outcome
       const finalRideState = await Ride.findById(rideId);
 
       if (accepted) {
@@ -475,7 +524,7 @@ class DispatchService {
           });
         }
       } else if (radius > maxRadius && !cancelDispatch && !accepted) {
-        // Handle max radius reached (same logic as before)
+        // Handle max radius reached
         this.logger.warn(`[Dispatch] Ride ${rideId}: reached max radius (${maxRadius} km). Holding for an extra ${graceAfterMaxRadius / 1000}s before aborting.`);
 
         const pollInterval = 5 * 1000;
@@ -557,7 +606,6 @@ class DispatchService {
     }
   }
 
-  // Rest of the methods remain the same as in the original code...
   startBackgroundDispatcher() {
     const dispatchCheckInterval = (this.rideSettings?.dispatch?.notificationTimeout || 15) * 2 * 1000;
     const finalInterval = Math.max(30000, Math.min(dispatchCheckInterval, 120000));
@@ -816,11 +864,90 @@ class DispatchService {
     return messages[reason] || 'This ride is no longer available.';
   }
 
-  // NEW: Clean up captain ride history when captain goes offline
   onCaptainOffline(captainId) {
     if (this.captainRideHistory.has(captainId)) {
       this.captainRideHistory.delete(captainId);
       this.logger.debug(`[DispatchService] Cleaned up ride history for offline captain ${captainId}`);
+    }
+  }
+
+  // NEW: Handle captain becoming available after completing a ride
+  async onCaptainAvailable(captainId, location) {
+    this.logger.debug(`[DispatchService] Captain ${captainId} became available after completing a ride`);
+    
+    // Clear any previous ride history for this captain to allow re-notification
+    if (this.captainRideHistory.has(captainId)) {
+      this.captainRideHistory.delete(captainId);
+    }
+    
+    // Check all active dispatches to see if this captain should be notified
+    for (const [rideId, dispatchInfo] of this.activeDispatches.entries()) {
+      try {
+        // Check if captain is within current search radius
+        const ride = await Ride.findById(rideId).select('pickupLocation status');
+        if (!ride || ride.status !== 'requested') {
+          continue;
+        }
+
+        const origin = {
+          latitude: ride.pickupLocation.coordinates[1],
+          longitude: ride.pickupLocation.coordinates[0]
+        };
+
+        // Calculate distance to captain
+        const distance = this.calculateDistance(origin, location);
+        
+        if (distance <= dispatchInfo.radius) {
+          this.logger.info(`[DispatchService] Newly available captain ${captainId} is within ${dispatchInfo.radius}km of ride ${rideId}. Notifying...`);
+          await this.notifySingleCaptain(captainId, rideId);
+        }
+      } catch (err) {
+        this.logger.error(`[DispatchService] Error checking newly available captain ${captainId} for ride ${rideId}:`, err);
+      }
+    }
+  }
+
+  // NEW: Re-evaluate active dispatches when a captain becomes available
+  async reevaluateActiveDispatches() {
+    this.logger.debug(`[DispatchService] Re-evaluating ${this.activeDispatches.size} active dispatches for newly available captains`);
+    
+    for (const [rideId, dispatchInfo] of this.activeDispatches.entries()) {
+      // Only re-evaluate if dispatch is currently waiting
+      if (!dispatchInfo.isWaiting) {
+        continue;
+      }
+
+      try {
+        const ride = await Ride.findById(rideId).select('pickupLocation status');
+        if (!ride || ride.status !== 'requested') {
+          continue;
+        }
+
+        const origin = {
+          latitude: ride.pickupLocation.coordinates[1],
+          longitude: ride.pickupLocation.coordinates[0]
+        };
+
+        // Find captains in current radius and check for newly available ones
+        const nearbyCaptainIds = await findNearbyCaptains(this.redisClient, this.logger, origin, dispatchInfo.radius);
+        const availableCaptains = await this.filterAvailableCaptains(nearbyCaptainIds, rideId);
+        const notifiedCaptains = this.rideNotifications.get(rideId) || new Set();
+        
+        const newlyAvailableCaptains = availableCaptains.filter(captainId => 
+          !notifiedCaptains.has(captainId)
+        );
+
+        if (newlyAvailableCaptains.length > 0) {
+          this.logger.info(`[DispatchService] Found ${newlyAvailableCaptains.length} newly available captains for ride ${rideId}`);
+          
+          // Notify newly available captains
+          for (const captainId of newlyAvailableCaptains) {
+            await this.notifySingleCaptain(captainId, rideId);
+          }
+        }
+      } catch (err) {
+        this.logger.error(`[DispatchService] Error re-evaluating ride ${rideId}:`, err);
+      }
     }
   }
 }

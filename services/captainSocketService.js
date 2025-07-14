@@ -2,6 +2,7 @@ const jwt = require("jsonwebtoken");
 const Ride = require("../model/ride");
 const Captain = require("../model/Driver");
 const RideSetting = require("../model/rideSetting");
+const { calculateDistance } = require("../utils/helpers");
 
 class CaptainSocketService {
   constructor(io, logger, dependencies) {
@@ -12,7 +13,6 @@ class CaptainSocketService {
     this.dispatchProcesses = dependencies.dispatchProcesses;
     this.rideSharingMap = dependencies.rideSharingMap;
     this.redisClient = dependencies.redisClient;
-    this.calculateDistance = dependencies.calculateDistance;
     this.dispatchRide = dependencies.dispatchRide;
     this.customerSocketService = dependencies.customerSocketService;
 
@@ -256,7 +256,7 @@ class CaptainSocketService {
         let notifiedRideCount = 0;
 
         for (let ride of pendingRides) {
-          const distance = this.calculateDistance(
+          const distance = calculateDistance(
             { latitude, longitude },
             {
               latitude: ride.pickupLocation.coordinates[1],

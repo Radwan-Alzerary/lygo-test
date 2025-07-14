@@ -1,7 +1,7 @@
 const customer = require("../model/customer");
 const Ride = require("../model/ride");
 const RideSetting = require("../model/rideSetting");
-const { findNearbyCaptains } = require("../utils/helpers");
+const { findNearbyCaptains, calculateDistance } = require("../utils/helpers");
 
 class DispatchService {
   constructor(logger, dependencies) {
@@ -145,7 +145,7 @@ class DispatchService {
         };
 
         // Calculate distance to captain
-        const distance = this.calculateDistance(origin, location);
+        const distance = calculateDistance(origin, location);
         
         if (distance <= dispatchInfo.radius) {
           this.logger.info(`[DispatchService] New available captain ${captainId} is within ${dispatchInfo.radius}km of ride ${rideId}. Notifying...`);
@@ -291,24 +291,6 @@ class DispatchService {
       this.logger.error(`[DispatchService] Error notifying captain ${captainId} about ride ${rideId}:`, err);
       return false;
     }
-  }
-
-  // NEW: Calculate distance between two points (simple approximation)
-  calculateDistance(point1, point2) {
-    const R = 6371; // Earth's radius in kilometers
-    const dLat = this.deg2rad(point2.latitude - point1.latitude);
-    const dLon = this.deg2rad(point2.longitude - point1.longitude);
-    const a = 
-      Math.sin(dLat/2) * Math.sin(dLat/2) +
-      Math.cos(this.deg2rad(point1.latitude)) * Math.cos(this.deg2rad(point2.latitude)) * 
-      Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    const distance = R * c; // Distance in km
-    return distance;
-  }
-
-  deg2rad(deg) {
-    return deg * (Math.PI/180);
   }
 
   // NEW: Filter captains to get only available ones (online and not busy)
@@ -895,7 +877,7 @@ class DispatchService {
         };
 
         // Calculate distance to captain
-        const distance = this.calculateDistance(origin, location);
+        const distance = calculateDistance(origin, location);
         
         if (distance <= dispatchInfo.radius) {
           this.logger.info(`[DispatchService] Newly available captain ${captainId} is within ${dispatchInfo.radius}km of ride ${rideId}. Notifying...`);

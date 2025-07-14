@@ -1,3 +1,5 @@
+// utils/helpers.js
+
 // Function to calculate the distance between two coordinates
 function calculateDistance(coord1, coord2) {
   // Basic check for valid inputs

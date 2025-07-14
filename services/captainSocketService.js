@@ -16,15 +16,18 @@ class CaptainSocketService {
     this.dispatchRide = dependencies.dispatchRide;
     this.customerSocketService = dependencies.customerSocketService;
 
-    // NEW: Add reference to DispatchService for notification management
+    // Reference to DispatchService for notification management
     this.dispatchService = dependencies.dispatchService || null;
 
     this.captainNamespace = null;
-    this.rideSettings = null;
+    this.rideSettings = null; // Cache for ride settings
   }
 
   async initialize() {
+    // Load ride settings
     await this.loadRideSettings();
+
+    // Captain Namespace
     this.captainNamespace = this.io.of("/captain");
     this.captainNamespace.on("connection", (socket) => this.handleConnection(socket));
     this.logger.info('[CaptainSocketService] Captain namespace initialized.');
@@ -34,6 +37,7 @@ class CaptainSocketService {
     try {
       this.rideSettings = await RideSetting.findOne({ name: "default" });
       if (!this.rideSettings) {
+        // Create default settings if none exist
         this.rideSettings = new RideSetting({});
         await this.rideSettings.save();
         this.logger.info('[CaptainSocketService] Created default ride settings.');
@@ -41,6 +45,7 @@ class CaptainSocketService {
       this.logger.info('[CaptainSocketService] Ride settings loaded successfully.');
     } catch (err) {
       this.logger.error('[CaptainSocketService] Error loading ride settings:', err);
+      // Use default values if DB fails
       this.rideSettings = {
         dispatch: {
           initialRadiusKm: 2,
@@ -77,6 +82,7 @@ class CaptainSocketService {
       return;
     }
 
+    // Verify JWT token
     jwt.verify(token, process.env.JWT_SECRET || "kishan sheth super secret key", async (err, decoded) => {
       if (err) {
         this.logger.warn(`[Socket.IO Captain] JWT verification failed for token: ${token}. Error: ${err.message}. Socket ID: ${socket.id}. Disconnecting.`);
@@ -90,6 +96,7 @@ class CaptainSocketService {
   async handleAuthenticated(socket, decoded) {
     const captainId = decoded.id;
 
+    // Validate captain eligibility based on rules
     const isEligible = await this.validateCaptainEligibility(captainId);
     if (!isEligible.eligible) {
       this.logger.warn(`[Socket.IO Captain] Captain ${captainId} not eligible: ${isEligible.reason}`);
@@ -103,6 +110,7 @@ class CaptainSocketService {
     }
 
     const oldSocketId = this.onlineCaptains[captainId];
+
     if (oldSocketId && oldSocketId !== socket.id) {
       this.logger.warn(`[Socket.IO Captain] Captain ${captainId} already connected with socket ${oldSocketId}. Disconnecting old socket.`);
       const oldSocket = this.captainNamespace.sockets.get(oldSocketId);
@@ -115,48 +123,18 @@ class CaptainSocketService {
     this.logger.info(`[Socket.IO Captain] Captain ${captainId} successfully connected. Socket ID: ${socket.id}`);
     this.logger.debug(`[State] Online captains: ${JSON.stringify(this.onlineCaptains)}`);
 
+    // Send current settings to captain
     socket.emit("rideSettings", {
       fare: this.rideSettings.fare,
       paymentMethods: this.rideSettings.paymentMethods,
       allowShared: this.rideSettings.allowShared
     });
 
-    // NEW: Get captain location and notify dispatch service
-    await this.notifyDispatchOfCaptainOnline(captainId);
-
+    // Restore captain state on connection
     await this.restoreCaptainState(socket, captainId);
+
+    // Setup event listeners
     this.setupEventListeners(socket, captainId);
-  }
-
-  // NEW: Notify dispatch service when captain comes online
-  async notifyDispatchOfCaptainOnline(captainId) {
-    try {
-      const captainLocation = await this.getCaptainLocation(captainId);
-      if (captainLocation && this.dispatchService) {
-        await this.dispatchService.onCaptainOnline(captainId, captainLocation);
-        this.logger.info(`[CaptainSocketService] Notified dispatch service of captain ${captainId} coming online`);
-      }
-    } catch (err) {
-      this.logger.error(`[CaptainSocketService] Error notifying dispatch of captain ${captainId} online:`, err);
-    }
-  }
-
-  // NEW: Get captain's current location
-  async getCaptainLocation(captainId) {
-    try {
-      const locationData = await this.redisClient.geoPos("captains", captainId);
-      if (locationData && locationData.length > 0 && locationData[0]) {
-        const { longitude: lonStr, latitude: latStr } = locationData[0];
-        return {
-          latitude: parseFloat(latStr),
-          longitude: parseFloat(lonStr)
-        };
-      }
-      return null;
-    } catch (err) {
-      this.logger.error(`[CaptainSocketService] Error getting location for captain ${captainId}:`, err);
-      return null;
-    }
   }
 
   async validateCaptainEligibility(captainId) {
@@ -166,6 +144,7 @@ class CaptainSocketService {
         return { eligible: false, reason: "Captain not found" };
       }
 
+      // Check minimum rating
       if (captain.rating < this.rideSettings.captainRules.minRating) {
         return {
           eligible: false,
@@ -173,6 +152,7 @@ class CaptainSocketService {
         };
       }
 
+      // Check minimum wallet balance
       if (captain.walletBalance < this.rideSettings.captainRules.minWalletBalance) {
         return {
           eligible: false,
@@ -180,6 +160,7 @@ class CaptainSocketService {
         };
       }
 
+      // Check maximum active rides
       const activeRides = await Ride.countDocuments({
         driver: captainId,
         status: { $in: ['accepted', 'arrived', 'onRide'] }
@@ -203,6 +184,7 @@ class CaptainSocketService {
     try {
       this.logger.info(`[Socket.IO Captain] Checking for ongoing or assigned rides for captain ${captainId}`);
 
+      // Find any ride the captain is actively involved in
       const ongoingRide = await Ride.findOne({
         driver: captainId,
         status: { $in: ['accepted', 'arrived', 'onRide'] },
@@ -211,11 +193,13 @@ class CaptainSocketService {
       if (ongoingRide) {
         this.logger.info(`[DB] Found ongoing ride ${ongoingRide._id} (Status: ${ongoingRide.status}) for captain ${captainId}. Restoring state.`);
 
+        // Add captain back to ride sharing map if needed
         if (!this.rideSharingMap.has(captainId)) {
           this.rideSharingMap.set(captainId, ongoingRide.passenger._id);
           this.logger.info(`[State] Restored ride sharing for captain ${captainId} and customer ${ongoingRide.passenger._id}`);
         }
 
+        // Send the current ride details to the captain
         socket.emit("restoreRide", {
           rideId: ongoingRide._id,
           pickupLocation: ongoingRide.pickupLocation.coordinates,
@@ -249,11 +233,15 @@ class CaptainSocketService {
         const latitude = parseFloat(latStr);
         this.logger.info(`[Redis] Captain ${captainId} last known location: (${longitude}, ${latitude})`);
 
-        const pendingRides = await Ride.find({ status: "requested" });
+        // جلب الطلبات المعلقة
+        const pendingRides = await Ride.find({ 
+          status: "requested",
+          isDispatching: true
+        }).lean();
+        
         this.logger.info(`[DB] Found ${pendingRides.length} rides with status 'requested'. Checking proximity for captain ${captainId}.`);
 
-        const notificationRadius = this.rideSettings.dispatch.initialRadiusKm;
-        let notifiedRideCount = 0;
+        const ridesToNotify = [];
 
         for (let ride of pendingRides) {
           const distance = this.calculateDistance(
@@ -264,26 +252,91 @@ class CaptainSocketService {
             }
           );
 
-          if (distance <= notificationRadius) {
+          // استخدام النطاق الحالي للطلب إذا كان متوفراً
+          let effectiveRadius = this.rideSettings.dispatch.initialRadiusKm;
+          
+          // إذا كان هناك عملية dispatch نشطة، جلب النطاق الحالي من DispatchService
+          if (this.dispatchService && this.dispatchService.dispatchProcesses.has(ride._id.toString())) {
+            // محاولة الحصول على النطاق الحالي من معلومات التتبع
+            const rideIdStr = ride._id.toString();
+            const currentRadius = this.dispatchService.getCurrentRadiusForRide(rideIdStr);
+            if (currentRadius) {
+              effectiveRadius = currentRadius;
+            } else {
+              // تقدير النطاق بناءً على الوقت المنقضي
+              const rideAge = (Date.now() - new Date(ride.createdAt)) / 1000;
+              const estimatedRadius = Math.min(
+                this.rideSettings.dispatch.initialRadiusKm + 
+                Math.floor(rideAge / this.rideSettings.dispatch.notificationTimeout) * 
+                this.rideSettings.dispatch.radiusIncrementKm,
+                this.rideSettings.dispatch.maxRadiusKm
+              );
+              effectiveRadius = estimatedRadius;
+            }
+          }
+
+          // التحقق من أن الكابتن لم يتم إشعاره مسبقاً
+          let wasNotified = false;
+          if (this.dispatchService) {
+            const notifiedCaptains = this.dispatchService.getNotifiedCaptains(ride._id);
+            wasNotified = notifiedCaptains.has(captainId);
+          }
+
+          if (distance <= effectiveRadius && !wasNotified) {
             if (this.validateFareInBounds(ride.fare.amount)) {
-              notifiedRideCount++;
-              this.logger.info(`[Socket.IO Captain] Ride ${ride._id} is within ${notificationRadius}km (${distance.toFixed(2)}km). Emitting 'newRide' to captain ${captainId}`);
-              socket.emit("newRide", {
-                rideId: ride._id,
-                pickupLocation: ride.pickupLocation.coordinates,
-                pickupName: ride.pickupLocation.locationName,
-                dropoffLocation: ride.dropoffLocation.coordinates,
-                dropoffName: ride.dropoffLocation.locationName,
-                fare: ride.fare.amount,
-                currency: this.rideSettings.fare.currency,
-                distance: ride.distance,
-                duration: ride.duration,
-                paymentMethod: ride.paymentMethod,
+              ridesToNotify.push({
+                ride: ride,
+                distance: distance,
+                radius: effectiveRadius
               });
             }
           }
         }
-        this.logger.info(`[Socket.IO Captain] Notified captain ${captainId} about ${notifiedRideCount} pending rides within ${notificationRadius}km.`);
+
+        // ترتيب الطلبات حسب المسافة
+        ridesToNotify.sort((a, b) => a.distance - b.distance);
+
+        // إرسال الطلبات بتأخير بسيط
+        let notifiedRideCount = 0;
+        for (let i = 0; i < ridesToNotify.length; i++) {
+          const { ride, distance, radius } = ridesToNotify[i];
+          notifiedRideCount++;
+          
+          this.logger.info(`[Socket.IO Captain] Ride ${ride._id} is within ${radius}km (${distance.toFixed(2)}km). Emitting 'newRide' to captain ${captainId}`);
+          
+          socket.emit("newRide", {
+            rideId: ride._id,
+            pickupLocation: ride.pickupLocation.coordinates,
+            pickupName: ride.pickupLocation.locationName,
+            dropoffLocation: ride.dropoffLocation.coordinates,
+            dropoffName: ride.dropoffLocation.locationName,
+            fare: ride.fare.amount,
+            currency: this.rideSettings.fare.currency,
+            distance: ride.distance,
+            duration: ride.duration,
+            paymentMethod: ride.paymentMethod,
+            // إضافة معلومات للتمييز بين الطلبات
+            notificationOrder: i + 1,
+            totalPendingRides: ridesToNotify.length,
+            displayDelay: i * 500, // تأخير العرض بالميلي ثانية
+            searchRadius: radius
+          });
+
+          // إضافة الكابتن لتتبع الإشعارات
+          if (this.dispatchService) {
+            const rideNotifications = this.dispatchService.rideNotifications.get(ride._id.toString());
+            if (rideNotifications) {
+              rideNotifications.add(captainId);
+            }
+          }
+          
+          // تأخير قصير بين الإشعارات (300ms)
+          if (i < ridesToNotify.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 300));
+          }
+        }
+        
+        this.logger.info(`[Socket.IO Captain] Notified captain ${captainId} about ${notifiedRideCount} pending rides.`);
       } else {
         this.logger.warn(`[Redis] No location found in Redis for captain ${captainId}. Cannot check for pending rides.`);
       }
@@ -298,42 +351,52 @@ class CaptainSocketService {
   }
 
   setupEventListeners(socket, captainId) {
+    // Listen for location updates
     socket.on("updateLocation", async (data) => {
       await this.handleLocationUpdate(socket, captainId, data);
     });
 
+    // Listen for ride acceptance
     socket.on("acceptRide", async (data) => {
       await this.handleRideAcceptance(socket, captainId, data);
     });
 
+    // Listen for captain canceling ride
     socket.on("cancelRide", async (data) => {
       await this.handleRideCancellation(socket, captainId, data);
     });
 
+    // Listen for captain arriving
     socket.on("arrived", async (data) => {
       await this.handleCaptainArrived(socket, captainId, data);
     });
 
+    // Listen for starting ride
     socket.on("startRide", async (data) => {
       await this.handleStartRide(socket, captainId, data);
     });
 
+    // Listen for ending ride
     socket.on("endRide", async (data) => {
       await this.handleEndRide(socket, captainId, data);
     });
 
+    // Listen for hide ride acknowledgments
     socket.on("hideRideAcknowledge", (data) => {
       this.handleHideRideAcknowledge(socket, captainId, data);
     });
 
+    // Handle disconnect
     socket.on("disconnect", (reason) => {
       this.handleDisconnect(socket, captainId, reason);
     });
 
+    // Handle socket errors
     socket.on('error', (error) => {
       this.logger.error(`[Socket.IO Captain] Socket error for captain ${captainId} on socket ${socket.id}:`, error);
     });
 
+    // Handle settings refresh request
     socket.on("refreshSettings", async () => {
       await this.loadRideSettings();
       socket.emit("rideSettings", {
@@ -344,12 +407,14 @@ class CaptainSocketService {
     });
   }
 
+  // Handle captain acknowledging they received hide ride notification
   handleHideRideAcknowledge(socket, captainId, data) {
     const rideId = typeof data === 'object' ? data.rideId : data;
     this.logger.debug(`[Socket.IO Captain] Captain ${captainId} acknowledged hiding ride ${rideId}`);
   }
 
   async handleLocationUpdate(socket, captainId, data) {
+    // Validate data
     if (!data || typeof data.latitude !== 'number' || typeof data.longitude !== 'number') {
       this.logger.warn(`[Socket.IO Captain] Received invalid location update from captain ${captainId}. Data: ${JSON.stringify(data)}`);
       return;
@@ -365,6 +430,7 @@ class CaptainSocketService {
       });
       this.logger.info(`[Redis] Location updated for captain ${captainId} to (${data.longitude}, ${data.latitude})`);
 
+      // Share location with customer if on an active ride
       if (this.rideSharingMap.has(captainId)) {
         const customerId = this.rideSharingMap.get(captainId);
         const sent = this.customerSocketService.emitToCustomer(customerId, "driverLocationUpdate", {
@@ -394,7 +460,21 @@ class CaptainSocketService {
 
     this.logger.info(`[Socket.IO Captain] Received 'acceptRide' for ride ${rideId} from captain ${captainId}. Socket ID: ${socket.id}`);
 
+    // استخدام semaphore أو mutex لمنع السباق الشرطي
+    const lockKey = `ride_accept_${rideId}`;
+    let lockAcquired = false;
+
     try {
+      // محاولة الحصول على قفل لمدة 5 ثواني
+      lockAcquired = await this.acquireRedisLock(lockKey, 5000);
+      
+      if (!lockAcquired) {
+        this.logger.warn(`[Socket.IO Captain] Could not acquire lock for ride ${rideId}. Another captain may be accepting.`);
+        socket.emit("rideError", { message: "Another captain is processing this ride. Please wait.", rideId: rideId });
+        return;
+      }
+
+      // Check captain eligibility before accepting ride
       const eligibilityCheck = await this.validateCaptainEligibility(captainId);
       if (!eligibilityCheck.eligible) {
         this.logger.warn(`[Socket.IO Captain] Captain ${captainId} not eligible to accept ride: ${eligibilityCheck.reason}`);
@@ -417,7 +497,6 @@ class CaptainSocketService {
       if (ride) {
         this.logger.info(`[DB] Ride ${rideId} successfully accepted by captain ${captainId}. Status updated to 'accepted'.`);
 
-        // *** KEY ADDITION *** 
         // Notify other captains to hide this ride
         if (this.dispatchService) {
           this.logger.info(`[Socket.IO Captain] Notifying other captains to hide ride ${rideId}`);
@@ -426,6 +505,9 @@ class CaptainSocketService {
           this.logger.warn(`[Socket.IO Captain] DispatchService not available - cannot notify other captains to hide ride ${rideId}`);
         }
 
+        // إخفاء جميع الطلبات الأخرى من هذا الكابتن
+        await this.hideOtherRidesFromCaptain(socket, captainId, rideId);
+
         // Stop dispatch process
         if (this.dispatchProcesses.has(rideId.toString())) {
           this.logger.info(`[Dispatch] Found active dispatch process for ride ${rideId}. Cancelling.`);
@@ -433,13 +515,6 @@ class CaptainSocketService {
           cancelDispatch();
           this.dispatchProcesses.delete(rideId.toString());
           this.logger.info(`[Dispatch] Dispatch process for ride ${rideId} cancelled and removed.`);
-        }
-
-        // *** NEW CRITICAL ADDITION ***
-        // Re-evaluate all active dispatches since this captain is now busy
-        if (this.dispatchService) {
-          await this.dispatchService.reevaluateActiveDispatches();
-          this.logger.info(`[Socket.IO Captain] Re-evaluated active dispatches after captain ${captainId} accepted ride ${rideId}`);
         }
 
         // Notify customer
@@ -478,9 +553,11 @@ class CaptainSocketService {
           });
         }
 
+        // Start location sharing
         this.rideSharingMap.set(captainId, customerId);
         this.logger.info(`[State] Started ride sharing for captain ${captainId} and customer ${customerId}. Ride: ${rideId}`);
 
+        // Confirm acceptance to captain
         socket.emit('rideAcceptedConfirmation', {
           rideId: ride._id,
           status: ride.status,
@@ -503,6 +580,65 @@ class CaptainSocketService {
     } catch (err) {
       this.logger.error(`[Socket.IO Captain] Error accepting ride ${rideId} for captain ${captainId}:`, err);
       socket.emit("rideError", { message: "Failed to accept ride due to a server error.", rideId: rideId });
+    } finally {
+      // تحرير القفل
+      if (lockAcquired) {
+        await this.releaseRedisLock(lockKey);
+      }
+    }
+  }
+
+  async hideOtherRidesFromCaptain(socket, captainId, acceptedRideId) {
+    try {
+      // البحث عن جميع الطلبات المعلقة الأخرى
+      const otherPendingRides = await Ride.find({
+        status: "requested",
+        _id: { $ne: acceptedRideId }
+      }).select('_id').lean();
+
+      const hidePromises = otherPendingRides.map((ride, index) => {
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            socket.emit("hideRide", {
+              rideId: ride._id,
+              reason: "captain_accepted_other_ride",
+              message: "You have accepted another ride.",
+              hideImmediately: true
+            });
+            resolve();
+          }, index * 50); // تأخير صغير لتجنب إرسال كل شيء دفعة واحدة
+        });
+      });
+
+      await Promise.all(hidePromises);
+
+      this.logger.info(`[Socket.IO Captain] Hidden ${otherPendingRides.length} other rides from captain ${captainId} after accepting ride ${acceptedRideId}`);
+    } catch (err) {
+      this.logger.error(`[Socket.IO Captain] Error hiding other rides from captain ${captainId}:`, err);
+    }
+  }
+
+  async acquireRedisLock(key, ttlMs) {
+    try {
+      const lockValue = Date.now().toString();
+      const result = await this.redisClient.set(
+        `lock:${key}`,
+        lockValue,
+        'PX', ttlMs,
+        'NX'
+      );
+      return result === 'OK';
+    } catch (err) {
+      this.logger.error(`[Redis] Error acquiring lock for ${key}:`, err);
+      return false;
+    }
+  }
+
+  async releaseRedisLock(key) {
+    try {
+      await this.redisClient.del(`lock:${key}`);
+    } catch (err) {
+      this.logger.error(`[Redis] Error releasing lock for ${key}:`, err);
     }
   }
 
@@ -534,27 +670,20 @@ class CaptainSocketService {
 
       this.logger.info(`[DB] Updating ride ${rideId} status to 'requested' due to captain cancellation by ${captainId}. Previous status: ${ride.status}`);
 
+      // Reset ride state for re-dispatch
       ride.status = "requested";
       ride.driver = null;
       ride.isDispatching = true;
       ride.cancellationReason = `Cancelled by captain ${captainId} at status ${ride.status}`;
       await ride.save();
 
+      // Stop location sharing
       if (this.rideSharingMap.has(captainId)) {
         this.rideSharingMap.delete(captainId);
         this.logger.info(`[State] Stopped ride sharing for captain ${captainId} due to cancellation. Ride: ${rideId}`);
       }
 
-      // *** NEW CRITICAL ADDITION ***
-      // Notify dispatch service that captain is available again
-      if (this.dispatchService) {
-        const location = await this.getCaptainLocation(captainId);
-        if (location) {
-          await this.dispatchService.onCaptainAvailable(captainId, location);
-          this.logger.info(`[Socket.IO Captain] Notified dispatch service that captain ${captainId} is available after cancelling ride ${rideId}`);
-        }
-      }
-
+      // Notify customer
       const customerId = ride.passenger;
       this.customerSocketService.emitToCustomer(customerId, "rideCanceled", {
         rideId: ride._id,
@@ -562,8 +691,10 @@ class CaptainSocketService {
         reason: "captain_canceled"
       });
 
+      // Confirm cancellation to captain
       socket.emit("rideCancelledConfirmation", { rideId: ride._id, message: "Ride successfully cancelled." });
 
+      // Restart dispatch process with settings-based radius
       this.logger.info(`[Dispatch] Restarting dispatch process for cancelled ride ${rideId}`);
       const originCoords = {
         latitude: ride.pickupLocation.coordinates[1],
@@ -597,12 +728,14 @@ class CaptainSocketService {
       if (ride) {
         this.logger.info(`[DB] Ride ${rideId} status updated to 'arrived' by captain ${captainId}.`);
 
+        // Notify customer
         const customerId = ride.passenger;
         this.customerSocketService.emitToCustomer(customerId, "driverArrived", {
           rideId: ride._id,
           message: "Your captain has arrived at the pickup location.",
         });
 
+        // Confirm status update to captain
         socket.emit("rideStatusUpdate", { rideId: ride._id, status: "arrived" });
 
       } else {
@@ -637,12 +770,14 @@ class CaptainSocketService {
       if (ride) {
         this.logger.info(`[DB] Ride ${rideId} status updated to 'onRide' by captain ${captainId}.`);
 
+        // Notify customer
         const customerId = ride.passenger;
         this.customerSocketService.emitToCustomer(customerId, "rideStarted", {
           rideId: ride._id,
           message: "Your ride has started.",
         });
 
+        // Confirm status update to captain
         socket.emit("rideStartedConfirmation", { rideId: ride._id, status: "onRide" });
 
       } else {
@@ -683,6 +818,7 @@ class CaptainSocketService {
       if (ride) {
         this.logger.info(`[DB] Ride ${rideId} status updated to 'completed' by captain ${captainId}.`);
 
+        // Notify customer
         const customerId = ride.passenger;
         this.customerSocketService.emitToCustomer(customerId, "rideCompleted", {
           rideId: ride._id,
@@ -691,6 +827,7 @@ class CaptainSocketService {
           currency: this.rideSettings.fare.currency,
         });
 
+        // Confirm status update to captain
         socket.emit("rideStatusUpdate", {
           rideId: ride._id,
           status: "completed",
@@ -699,19 +836,10 @@ class CaptainSocketService {
           currency: this.rideSettings.fare.currency
         });
 
+        // Clean up state
         if (this.rideSharingMap.has(captainId)) {
           this.rideSharingMap.delete(captainId);
           this.logger.info(`[State] Stopped ride sharing for captain ${captainId} after ride completion. Ride: ${rideId}`);
-        }
-
-        // *** NEW CRITICAL ADDITION ***
-        // Notify dispatch service that captain is available again
-        if (this.dispatchService) {
-          const location = await this.getCaptainLocation(captainId);
-          if (location) {
-            await this.dispatchService.onCaptainAvailable(captainId, location);
-            this.logger.info(`[Socket.IO Captain] Notified dispatch service that captain ${captainId} is available after completing ride ${rideId}`);
-          }
         }
 
       } else {
@@ -729,22 +857,17 @@ class CaptainSocketService {
   handleDisconnect(socket, captainId, reason) {
     this.logger.info(`[Socket.IO Captain] Captain ${captainId} disconnected. Socket ID: ${socket.id}. Reason: ${reason}`);
 
+    // Clean up: Find the captainId associated with this socket.id and remove it
     for (let id in this.onlineCaptains) {
       if (this.onlineCaptains[id] === socket.id) {
         delete this.onlineCaptains[id];
         this.logger.info(`[State] Removed captain ${id} from onlineCaptains.`);
         this.logger.debug(`[State] Online captains: ${JSON.stringify(this.onlineCaptains)}`);
-        
-        // *** NEW ADDITION ***
-        // Notify dispatch service that captain went offline
-        if (this.dispatchService) {
-          this.dispatchService.onCaptainOffline(id);
-          this.logger.info(`[Socket.IO Captain] Notified dispatch service that captain ${id} went offline`);
-        }
         break;
       }
     }
 
+    // Clean up ride sharing map if the disconnected captain was in it
     if (this.rideSharingMap.has(captainId)) {
       const customerId = this.rideSharingMap.get(captainId);
       this.rideSharingMap.delete(captainId);
@@ -752,35 +875,17 @@ class CaptainSocketService {
     }
   }
 
-  // Enhanced emitToCaptain with better error handling
+  // Method to emit events to captains (called from other services)
   emitToCaptain(captainId, event, data) {
-    try {
-      const captainSocketId = this.onlineCaptains[captainId];
-      if (captainSocketId) {
-        const socket = this.captainNamespace.sockets.get(captainSocketId);
-        if (socket && socket.connected) {
-          socket.emit(event, data);
-          this.logger.debug(`[Socket.IO Captain] Emitted '${event}' to captain ${captainId}`);
-          return true;
-        } else {
-          this.logger.warn(`[Socket.IO Captain] Captain ${captainId} socket not connected`);
-          // Clean up offline captain
-          delete this.onlineCaptains[captainId];
-          if (this.dispatchService) {
-            this.dispatchService.onCaptainOffline(captainId);
-          }
-          return false;
-        }
-      } else {
-        this.logger.warn(`[Socket.IO Captain] Captain ${captainId} socket not found`);
-        return false;
-      }
-    } catch (err) {
-      this.logger.error(`[Socket.IO Captain] Error emitting '${event}' to captain ${captainId}:`, err);
-      return false;
+    const captainSocketId = this.onlineCaptains[captainId];
+    if (captainSocketId) {
+      this.captainNamespace.to(captainSocketId).emit(event, data);
+      return true;
     }
+    return false;
   }
 
+  // Method to emit to multiple captains
   emitToMultipleCaptains(captainIds, event, data) {
     const results = [];
     for (const captainId of captainIds) {
@@ -792,10 +897,12 @@ class CaptainSocketService {
     return results;
   }
 
+  // Method to get current settings (for external use)
   getCurrentSettings() {
     return this.rideSettings;
   }
 
+  // Method to apply surge pricing if enabled
   applySurgePricing(baseFare) {
     if (this.rideSettings.fare.surge.enabled) {
       const now = new Date();
@@ -805,17 +912,20 @@ class CaptainSocketService {
       if (surgeStart && surgeEnd && now >= surgeStart && now <= surgeEnd) {
         return baseFare * this.rideSettings.fare.surge.multiplier;
       } else if (!surgeStart && !surgeEnd) {
+        // Always active if no time window specified
         return baseFare * this.rideSettings.fare.surge.multiplier;
       }
     }
     return baseFare;
   }
 
+  // Method to set DispatchService reference
   setDispatchService(dispatchService) {
     this.dispatchService = dispatchService;
     this.logger.info('[CaptainSocketService] DispatchService reference injected.');
   }
 
+  /** يسمح بحقن أو تحديث CustomerSocketService بعد الإنشاء */
   setCustomerSocketService(customerSocketService) {
     this.customerSocketService = customerSocketService;
     this.logger.info('[CaptainSocketService] customerSocketService injected.');

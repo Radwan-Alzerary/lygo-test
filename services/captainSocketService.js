@@ -380,13 +380,13 @@ class CaptainSocketService {
         return { eligible: false, reason: "Captain not found in database" };
       }
 
-      if (!captain.isActive) {
-        return { eligible: false, reason: "Captain account is deactivated" };
-      }
+      // if (!captain.isActive) {
+      //   return { eligible: false, reason: "Captain account is deactivated" };
+      // }
 
-      if (!captain.isVerified) {
-        return { eligible: false, reason: "Captain account is not verified" };
-      }
+      // if (!captain.isVerified) {
+      //   return { eligible: false, reason: "Captain account is not verified" };
+      // }
 
       // Check minimum rating
       const minRating = this.rideSettings.captainRules.minRating;

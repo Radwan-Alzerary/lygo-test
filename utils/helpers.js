@@ -1,5 +1,3 @@
-// utils/helpers.js
-
 // Function to calculate the distance between two coordinates
 function calculateDistance(coord1, coord2) {
   // Basic check for valid inputs
@@ -16,7 +14,6 @@ function calculateDistance(coord1, coord2) {
 
   const lat1 = toRad(coord1.latitude);
   const lat2 = toRad(coord2.latitude);
-
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.sin(dLon / 2) *

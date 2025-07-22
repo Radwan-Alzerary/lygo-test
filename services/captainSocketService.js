@@ -16,11 +16,14 @@ class CaptainSocketService {
     this.dispatchRide = dependencies.dispatchRide;
     this.customerSocketService = dependencies.customerSocketService;
 
-    // Reference to DispatchService for notification management
+    // Add reference to DispatchService for notification management
     this.dispatchService = dependencies.dispatchService || null;
 
     this.captainNamespace = null;
     this.rideSettings = null; // Cache for ride settings
+    
+    // Track rejection analytics (optional)
+    this.rejectionStats = new Map(); // captainId -> { totalRejections, lastRejection }
   }
 
   async initialize() {
@@ -233,15 +236,12 @@ class CaptainSocketService {
         const latitude = parseFloat(latStr);
         this.logger.info(`[Redis] Captain ${captainId} last known location: (${longitude}, ${latitude})`);
 
-        // جلب الطلبات المعلقة
-        const pendingRides = await Ride.find({ 
-          status: "requested",
-          isDispatching: true
-        }).lean();
-        
+        const pendingRides = await Ride.find({ status: "requested" });
         this.logger.info(`[DB] Found ${pendingRides.length} rides with status 'requested'. Checking proximity for captain ${captainId}.`);
 
-        const ridesToNotify = [];
+        // Use notification radius from dispatch settings
+        const notificationRadius = this.rideSettings.dispatch.initialRadiusKm;
+        let notifiedRideCount = 0;
 
         for (let ride of pendingRides) {
           const distance = this.calculateDistance(
@@ -252,91 +252,33 @@ class CaptainSocketService {
             }
           );
 
-          // استخدام النطاق الحالي للطلب إذا كان متوفراً
-          let effectiveRadius = this.rideSettings.dispatch.initialRadiusKm;
-          
-          // إذا كان هناك عملية dispatch نشطة، جلب النطاق الحالي من DispatchService
-          if (this.dispatchService && this.dispatchService.dispatchProcesses.has(ride._id.toString())) {
-            // محاولة الحصول على النطاق الحالي من معلومات التتبع
-            const rideIdStr = ride._id.toString();
-            const currentRadius = this.dispatchService.getCurrentRadiusForRide(rideIdStr);
-            if (currentRadius) {
-              effectiveRadius = currentRadius;
-            } else {
-              // تقدير النطاق بناءً على الوقت المنقضي
-              const rideAge = (Date.now() - new Date(ride.createdAt)) / 1000;
-              const estimatedRadius = Math.min(
-                this.rideSettings.dispatch.initialRadiusKm + 
-                Math.floor(rideAge / this.rideSettings.dispatch.notificationTimeout) * 
-                this.rideSettings.dispatch.radiusIncrementKm,
-                this.rideSettings.dispatch.maxRadiusKm
-              );
-              effectiveRadius = estimatedRadius;
-            }
-          }
-
-          // التحقق من أن الكابتن لم يتم إشعاره مسبقاً
-          let wasNotified = false;
-          if (this.dispatchService) {
-            const notifiedCaptains = this.dispatchService.getNotifiedCaptains(ride._id);
-            wasNotified = notifiedCaptains.has(captainId);
-          }
-
-          if (distance <= effectiveRadius && !wasNotified) {
+          if (distance <= notificationRadius) {
+            // Validate fare bounds before notifying
             if (this.validateFareInBounds(ride.fare.amount)) {
-              ridesToNotify.push({
-                ride: ride,
-                distance: distance,
-                radius: effectiveRadius
+              notifiedRideCount++;
+              this.logger.info(`[Socket.IO Captain] Ride ${ride._id} is within ${notificationRadius}km (${distance.toFixed(2)}km). Emitting 'newRide' to captain ${captainId}`);
+              
+              socket.emit("newRide", {
+                rideId: ride._id,
+                pickupLocation: ride.pickupLocation.coordinates,
+                pickupName: ride.pickupLocation.locationName,
+                dropoffLocation: ride.dropoffLocation.coordinates,
+                dropoffName: ride.dropoffLocation.locationName,
+                fare: ride.fare.amount,
+                currency: this.rideSettings.fare.currency,
+                distance: ride.distance,
+                duration: ride.duration,
+                paymentMethod: ride.paymentMethod,
               });
+
+              // Track this notification if DispatchService is available
+              if (this.dispatchService) {
+                this.dispatchService.rideNotifications.get(ride._id.toString())?.add(captainId);
+              }
             }
           }
         }
-
-        // ترتيب الطلبات حسب المسافة
-        ridesToNotify.sort((a, b) => a.distance - b.distance);
-
-        // إرسال الطلبات بتأخير بسيط
-        let notifiedRideCount = 0;
-        for (let i = 0; i < ridesToNotify.length; i++) {
-          const { ride, distance, radius } = ridesToNotify[i];
-          notifiedRideCount++;
-          
-          this.logger.info(`[Socket.IO Captain] Ride ${ride._id} is within ${radius}km (${distance.toFixed(2)}km). Emitting 'newRide' to captain ${captainId}`);
-          
-          socket.emit("newRide", {
-            rideId: ride._id,
-            pickupLocation: ride.pickupLocation.coordinates,
-            pickupName: ride.pickupLocation.locationName,
-            dropoffLocation: ride.dropoffLocation.coordinates,
-            dropoffName: ride.dropoffLocation.locationName,
-            fare: ride.fare.amount,
-            currency: this.rideSettings.fare.currency,
-            distance: ride.distance,
-            duration: ride.duration,
-            paymentMethod: ride.paymentMethod,
-            // إضافة معلومات للتمييز بين الطلبات
-            notificationOrder: i + 1,
-            totalPendingRides: ridesToNotify.length,
-            displayDelay: i * 500, // تأخير العرض بالميلي ثانية
-            searchRadius: radius
-          });
-
-          // إضافة الكابتن لتتبع الإشعارات
-          if (this.dispatchService) {
-            const rideNotifications = this.dispatchService.rideNotifications.get(ride._id.toString());
-            if (rideNotifications) {
-              rideNotifications.add(captainId);
-            }
-          }
-          
-          // تأخير قصير بين الإشعارات (300ms)
-          if (i < ridesToNotify.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 300));
-          }
-        }
-        
-        this.logger.info(`[Socket.IO Captain] Notified captain ${captainId} about ${notifiedRideCount} pending rides.`);
+        this.logger.info(`[Socket.IO Captain] Notified captain ${captainId} about ${notifiedRideCount} pending rides within ${notificationRadius}km.`);
       } else {
         this.logger.warn(`[Redis] No location found in Redis for captain ${captainId}. Cannot check for pending rides.`);
       }
@@ -359,6 +301,11 @@ class CaptainSocketService {
     // Listen for ride acceptance
     socket.on("acceptRide", async (data) => {
       await this.handleRideAcceptance(socket, captainId, data);
+    });
+
+    // ✅ NEW: Listen for ride rejection (THIS WAS MISSING!)
+    socket.on("rejectRide", async (data) => {
+      await this.handleRideRejection(socket, captainId, data);
     });
 
     // Listen for captain canceling ride
@@ -407,10 +354,137 @@ class CaptainSocketService {
     });
   }
 
+  // ✅ NEW: Complete Ride Rejection Handler
+  async handleRideRejection(socket, captainId, data) {
+    const rideId = typeof data === 'object' ? data.rideId : data;
+    const rejectionReason = typeof data === 'object' ? data.reason : 'manual_rejection';
+    
+    if (!rideId) {
+      this.logger.warn(`[Socket.IO Captain] Received 'rejectRide' without rideId from captain ${captainId}.`);
+      socket.emit("rideError", { message: "Missing ride ID in rejection request." });
+      return;
+    }
+
+    this.logger.info(`[Socket.IO Captain] Received 'rejectRide' for ride ${rideId} from captain ${captainId}. Reason: ${rejectionReason}`);
+
+    try {
+      // Validate that the ride exists and is still requestable
+      const ride = await Ride.findById(rideId).select('status');
+      if (!ride) {
+        this.logger.warn(`[Socket.IO Captain] Captain ${captainId} tried to reject non-existent ride ${rideId}`);
+        socket.emit("rideError", { message: "Ride not found.", rideId: rideId });
+        return;
+      }
+
+      if (ride.status !== 'requested') {
+        this.logger.info(`[Socket.IO Captain] Captain ${captainId} rejected ride ${rideId} but it's no longer 'requested' (status: ${ride.status})`);
+        socket.emit("rejectRideConfirmation", { 
+          rideId: rideId, 
+          status: 'already_handled',
+          message: 'Ride is no longer available'
+        });
+        return;
+      }
+
+      // Check if captain was actually notified for this ride
+      const wasNotified = this.dispatchService ? 
+        this.dispatchService.wasCaptainNotified(rideId, captainId) : true;
+
+      if (!wasNotified) {
+        this.logger.warn(`[Socket.IO Captain] Captain ${captainId} rejected ride ${rideId} but was not notified for it`);
+        socket.emit("rejectRideConfirmation", { 
+          rideId: rideId, 
+          status: 'not_notified',
+          message: 'You were not notified for this ride'
+        });
+        return;
+      }
+
+      // Let DispatchService handle the rejection tracking
+      let rejectionResult = null;
+      if (this.dispatchService) {
+        rejectionResult = this.dispatchService.handleCaptainRejection(rideId, captainId);
+        this.logger.info(`[Socket.IO Captain] DispatchService processed rejection of ride ${rideId} by captain ${captainId}`);
+      } else {
+        this.logger.warn(`[Socket.IO Captain] DispatchService not available - cannot track rejection for ride ${rideId}`);
+      }
+
+      // Update rejection statistics (optional analytics)
+      this.updateRejectionStats(captainId, rejectionReason);
+
+      // Optional: Log rejection to database for analytics
+      await this.logRejectionToDatabase(captainId, rideId, rejectionReason);
+
+      // Send confirmation to captain
+      socket.emit('rejectRideConfirmation', { 
+        rideId: rideId, 
+        status: 'received',
+        message: 'Rejection processed successfully',
+        remainingCaptains: rejectionResult?.remainingNotifiedCaptains || 0
+      });
+
+      this.logger.info(`[Socket.IO Captain] Captain ${captainId} rejection of ride ${rideId} processed successfully. Remaining notified captains: ${rejectionResult?.remainingNotifiedCaptains || 'unknown'}`);
+
+    } catch (err) {
+      this.logger.error(`[Socket.IO Captain] Error handling rejection of ride ${rideId} by captain ${captainId}:`, err);
+      socket.emit("rideError", { 
+        message: "Failed to process rejection due to a server error.", 
+        rideId: rideId 
+      });
+    }
+  }
+
+  // Helper method to update rejection statistics
+  updateRejectionStats(captainId, reason) {
+    try {
+      if (!this.rejectionStats.has(captainId)) {
+        this.rejectionStats.set(captainId, {
+          totalRejections: 0,
+          lastRejection: null,
+          reasons: {}
+        });
+      }
+
+      const stats = this.rejectionStats.get(captainId);
+      stats.totalRejections++;
+      stats.lastRejection = new Date();
+      stats.reasons[reason] = (stats.reasons[reason] || 0) + 1;
+
+      this.logger.debug(`[Analytics] Updated rejection stats for captain ${captainId}: ${stats.totalRejections} total rejections`);
+    } catch (err) {
+      this.logger.error(`[Analytics] Error updating rejection stats for captain ${captainId}:`, err);
+    }
+  }
+
+  // Helper method to log rejection to database (optional)
+  async logRejectionToDatabase(captainId, rideId, reason) {
+    try {
+      // You can create a CaptainRejection model to store this data
+      // Example:
+      /*
+      const CaptainRejection = require("../model/captainRejection");
+      await CaptainRejection.create({
+        captainId: captainId,
+        rideId: rideId,
+        reason: reason,
+        timestamp: new Date(),
+        metadata: {
+          sessionId: socket.id,
+          userAgent: socket.handshake.headers['user-agent']
+        }
+      });
+      */
+      this.logger.debug(`[DB] Would log rejection: Captain ${captainId}, Ride ${rideId}, Reason: ${reason}`);
+    } catch (err) {
+      this.logger.error(`[DB] Error logging rejection to database for captain ${captainId}, ride ${rideId}:`, err);
+    }
+  }
+
   // Handle captain acknowledging they received hide ride notification
   handleHideRideAcknowledge(socket, captainId, data) {
     const rideId = typeof data === 'object' ? data.rideId : data;
     this.logger.debug(`[Socket.IO Captain] Captain ${captainId} acknowledged hiding ride ${rideId}`);
+    // Optional: You can add analytics tracking here
   }
 
   async handleLocationUpdate(socket, captainId, data) {
@@ -460,25 +534,25 @@ class CaptainSocketService {
 
     this.logger.info(`[Socket.IO Captain] Received 'acceptRide' for ride ${rideId} from captain ${captainId}. Socket ID: ${socket.id}`);
 
-    // استخدام semaphore أو mutex لمنع السباق الشرطي
-    const lockKey = `ride_accept_${rideId}`;
-    let lockAcquired = false;
-
     try {
-      // محاولة الحصول على قفل لمدة 5 ثواني
-      lockAcquired = await this.acquireRedisLock(lockKey, 5000);
-      
-      if (!lockAcquired) {
-        this.logger.warn(`[Socket.IO Captain] Could not acquire lock for ride ${rideId}. Another captain may be accepting.`);
-        socket.emit("rideError", { message: "Another captain is processing this ride. Please wait.", rideId: rideId });
-        return;
-      }
-
       // Check captain eligibility before accepting ride
       const eligibilityCheck = await this.validateCaptainEligibility(captainId);
       if (!eligibilityCheck.eligible) {
         this.logger.warn(`[Socket.IO Captain] Captain ${captainId} not eligible to accept ride: ${eligibilityCheck.reason}`);
         socket.emit("rideError", { message: eligibilityCheck.reason, rideId: rideId });
+        return;
+      }
+
+      // Check if captain was actually notified for this ride
+      const wasNotified = this.dispatchService ? 
+        this.dispatchService.wasCaptainNotified(rideId, captainId) : true;
+
+      if (!wasNotified) {
+        this.logger.warn(`[Socket.IO Captain] Captain ${captainId} tried to accept ride ${rideId} but was not notified for it`);
+        socket.emit("rideError", { 
+          message: "You were not notified for this ride", 
+          rideId: rideId 
+        });
         return;
       }
 
@@ -488,7 +562,8 @@ class CaptainSocketService {
           $set: {
             status: "accepted",
             driver: captainId,
-            isDispatching: false
+            isDispatching: false,
+            acceptedAt: new Date()
           }
         },
         { new: true }
@@ -497,16 +572,13 @@ class CaptainSocketService {
       if (ride) {
         this.logger.info(`[DB] Ride ${rideId} successfully accepted by captain ${captainId}. Status updated to 'accepted'.`);
 
-        // Notify other captains to hide this ride
+        // Let DispatchService handle the acceptance and notification cleanup
         if (this.dispatchService) {
-          this.logger.info(`[Socket.IO Captain] Notifying other captains to hide ride ${rideId}`);
-          this.dispatchService.notifyCaptainsToHideRide(rideId, captainId);
+          await this.dispatchService.handleCaptainAcceptance(rideId, captainId);
+          this.logger.info(`[Socket.IO Captain] DispatchService processed acceptance of ride ${rideId} by captain ${captainId}`);
         } else {
-          this.logger.warn(`[Socket.IO Captain] DispatchService not available - cannot notify other captains to hide ride ${rideId}`);
+          this.logger.warn(`[Socket.IO Captain] DispatchService not available - cannot clean up notifications for ride ${rideId}`);
         }
-
-        // إخفاء جميع الطلبات الأخرى من هذا الكابتن
-        await this.hideOtherRidesFromCaptain(socket, captainId, rideId);
 
         // Stop dispatch process
         if (this.dispatchProcesses.has(rideId.toString())) {
@@ -520,7 +592,7 @@ class CaptainSocketService {
         // Notify customer
         const customerId = ride.passenger._id;
         try {
-          const captainInfo = await Captain.findById(captainId).select('name carDetails phoneNumber');
+          const captainInfo = await Captain.findById(captainId).select('name carDetails phoneNumber rating profileImage');
           if (!captainInfo) {
             throw new Error(`Captain ${captainId} not found in DB`);
           }
@@ -532,12 +604,15 @@ class CaptainSocketService {
               name: captainInfo.name,
               vehicle: captainInfo.carDetails,
               phoneNumber: captainInfo.phoneNumber,
+              rating: captainInfo.rating,
+              profileImage: captainInfo.profileImage
             },
             passengerInfo: {
               id: ride.passenger._id,
               name: ride.passenger.name,
               phoneNumber: ride.passenger.phoneNumber
-            }
+            },
+            estimatedArrival: ride.estimatedArrival
           });
 
           if (!sent) {
@@ -580,65 +655,6 @@ class CaptainSocketService {
     } catch (err) {
       this.logger.error(`[Socket.IO Captain] Error accepting ride ${rideId} for captain ${captainId}:`, err);
       socket.emit("rideError", { message: "Failed to accept ride due to a server error.", rideId: rideId });
-    } finally {
-      // تحرير القفل
-      if (lockAcquired) {
-        await this.releaseRedisLock(lockKey);
-      }
-    }
-  }
-
-  async hideOtherRidesFromCaptain(socket, captainId, acceptedRideId) {
-    try {
-      // البحث عن جميع الطلبات المعلقة الأخرى
-      const otherPendingRides = await Ride.find({
-        status: "requested",
-        _id: { $ne: acceptedRideId }
-      }).select('_id').lean();
-
-      const hidePromises = otherPendingRides.map((ride, index) => {
-        return new Promise((resolve) => {
-          setTimeout(() => {
-            socket.emit("hideRide", {
-              rideId: ride._id,
-              reason: "captain_accepted_other_ride",
-              message: "You have accepted another ride.",
-              hideImmediately: true
-            });
-            resolve();
-          }, index * 50); // تأخير صغير لتجنب إرسال كل شيء دفعة واحدة
-        });
-      });
-
-      await Promise.all(hidePromises);
-
-      this.logger.info(`[Socket.IO Captain] Hidden ${otherPendingRides.length} other rides from captain ${captainId} after accepting ride ${acceptedRideId}`);
-    } catch (err) {
-      this.logger.error(`[Socket.IO Captain] Error hiding other rides from captain ${captainId}:`, err);
-    }
-  }
-
-  async acquireRedisLock(key, ttlMs) {
-    try {
-      const lockValue = Date.now().toString();
-      const result = await this.redisClient.set(
-        `lock:${key}`,
-        lockValue,
-        'PX', ttlMs,
-        'NX'
-      );
-      return result === 'OK';
-    } catch (err) {
-      this.logger.error(`[Redis] Error acquiring lock for ${key}:`, err);
-      return false;
-    }
-  }
-
-  async releaseRedisLock(key) {
-    try {
-      await this.redisClient.del(`lock:${key}`);
-    } catch (err) {
-      this.logger.error(`[Redis] Error releasing lock for ${key}:`, err);
     }
   }
 
@@ -675,7 +691,13 @@ class CaptainSocketService {
       ride.driver = null;
       ride.isDispatching = true;
       ride.cancellationReason = `Cancelled by captain ${captainId} at status ${ride.status}`;
+      ride.cancelledAt = new Date();
       await ride.save();
+
+      // Let DispatchService clean up tracking
+      if (this.dispatchService) {
+        await this.dispatchService.handleCaptainCancellation(rideId, captainId);
+      }
 
       // Stop location sharing
       if (this.rideSharingMap.has(captainId)) {
@@ -721,7 +743,7 @@ class CaptainSocketService {
     try {
       const ride = await Ride.findOneAndUpdate(
         { _id: rideId, driver: captainId, status: "accepted" },
-        { $set: { status: "arrived" } },
+        { $set: { status: "arrived", arrivedAt: new Date() } },
         { new: true }
       );
 
@@ -818,6 +840,14 @@ class CaptainSocketService {
       if (ride) {
         this.logger.info(`[DB] Ride ${rideId} status updated to 'completed' by captain ${captainId}.`);
 
+        // Calculate actual ride duration
+        const actualDuration = ride.rideEndTime - ride.rideStartTime;
+        
+        // Clean up DispatchService tracking
+        if (this.dispatchService) {
+          this.dispatchService.cleanupRideNotifications(rideId);
+        }
+
         // Notify customer
         const customerId = ride.passenger;
         this.customerSocketService.emitToCustomer(customerId, "rideCompleted", {
@@ -825,6 +855,7 @@ class CaptainSocketService {
           message: "Your ride has been completed. Thank you for riding with us!",
           fare: ride.fare.amount,
           currency: this.rideSettings.fare.currency,
+          duration: Math.round(actualDuration / (1000 * 60)) // minutes
         });
 
         // Confirm status update to captain
@@ -833,7 +864,8 @@ class CaptainSocketService {
           status: "completed",
           message: "Ride successfully completed.",
           fare: ride.fare.amount,
-          currency: this.rideSettings.fare.currency
+          currency: this.rideSettings.fare.currency,
+          duration: Math.round(actualDuration / (1000 * 60))
         });
 
         // Clean up state
@@ -872,6 +904,14 @@ class CaptainSocketService {
       const customerId = this.rideSharingMap.get(captainId);
       this.rideSharingMap.delete(captainId);
       this.logger.warn(`[State] Captain ${captainId} disconnected during active ride sharing with customer ${customerId}. Ride sharing stopped.`);
+    }
+
+    // Clean up rejection stats if captain disconnects
+    if (this.rejectionStats.has(captainId)) {
+      // Optionally persist stats before cleanup
+      const stats = this.rejectionStats.get(captainId);
+      this.logger.debug(`[Analytics] Captain ${captainId} disconnected with ${stats.totalRejections} total rejections`);
+      // Keep stats for now, clean up after some time or persist to DB
     }
   }
 
@@ -925,10 +965,47 @@ class CaptainSocketService {
     this.logger.info('[CaptainSocketService] DispatchService reference injected.');
   }
 
-  /** يسمح بحقن أو تحديث CustomerSocketService بعد الإنشاء */
+  // Method to set CustomerSocketService reference
   setCustomerSocketService(customerSocketService) {
     this.customerSocketService = customerSocketService;
     this.logger.info('[CaptainSocketService] customerSocketService injected.');
+  }
+
+  // NEW: Get rejection statistics for analytics
+  getRejectionStats(captainId = null) {
+    if (captainId) {
+      return this.rejectionStats.get(captainId) || null;
+    }
+    
+    // Return overall stats
+    const totalCaptains = this.rejectionStats.size;
+    let totalRejections = 0;
+    const reasonCounts = {};
+
+    this.rejectionStats.forEach((stats) => {
+      totalRejections += stats.totalRejections;
+      Object.entries(stats.reasons).forEach(([reason, count]) => {
+        reasonCounts[reason] = (reasonCounts[reason] || 0) + count;
+      });
+    });
+
+    return {
+      totalCaptains,
+      totalRejections,
+      averageRejectionsPerCaptain: totalCaptains > 0 ? totalRejections / totalCaptains : 0,
+      reasonBreakdown: reasonCounts
+    };
+  }
+
+  // NEW: Reset rejection stats (for maintenance)
+  resetRejectionStats(captainId = null) {
+    if (captainId) {
+      this.rejectionStats.delete(captainId);
+      this.logger.info(`[Analytics] Reset rejection stats for captain ${captainId}`);
+    } else {
+      this.rejectionStats.clear();
+      this.logger.info(`[Analytics] Reset all rejection stats`);
+    }
   }
 }
 

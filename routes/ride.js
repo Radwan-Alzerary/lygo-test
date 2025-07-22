@@ -1,6 +1,8 @@
 const express = require("express");
 const router = express.Router();
 const Ride = require("../model/ride");
+const rideSetting = require("../model/rideSetting");
+const { calculateRideFare, calculateDistance, estimateDuration } = require("../utils/fareCalculator");
 
 // Create a new ride
 router.post("/rides", async (req, res) => {
@@ -134,5 +136,68 @@ router.delete("/rides/:id", async (req, res) => {
       .json({ message: "Failed to delete ride", error: error.message });
   }
 });
+
+router.post('/estimate', async (req, res) => {
+  try {
+    const { pickupLocation, dropoffLocation, vehicleType, paymentMethod, isShared, priority, scheduledTime, customerType } = req.body;
+
+    if (
+      !pickupLocation?.coordinates ||
+      !Array.isArray(pickupLocation.coordinates) ||
+      pickupLocation.coordinates.length !== 2 ||
+      !dropoffLocation?.coordinates ||
+      !Array.isArray(dropoffLocation.coordinates) ||
+      dropoffLocation.coordinates.length !== 2
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'pickupLocation and dropoffLocation with valid coordinates are required'
+      });
+    }
+
+    // 1. Calculate distance & duration
+    const distance = calculateDistance(pickupLocation.coordinates, dropoffLocation.coordinates);
+    const duration = estimateDuration(distance);
+
+    // 2. Build rideDetails for fare calculation
+    const rideDetails = {
+      distance,
+      duration,
+      pickupLocation,
+      dropoffLocation,
+      vehicleType: vehicleType || 'standard',
+      paymentMethod: paymentMethod || 'cash',
+      isShared: Boolean(isShared),
+      priority: priority || 'normal',
+      scheduledTime,
+      customerType: customerType || 'regular'
+    };
+
+    // 3. Fetch your fare settings (fallback to defaults if none)
+    const settingsDoc = await rideSetting.findOne({}).lean();
+    const settings = settingsDoc || {};
+
+    // 4. Run fare calculation
+    const fareResult = calculateRideFare(rideDetails, settings, { breakdown: true });
+
+    // 5. Send response
+    res.json({
+      success: true,
+      data: {
+        distance: Number(distance.toFixed(2)),   // km
+        duration,                                 // minutes
+        fare: fareResult
+      }
+    });
+  } catch (err) {
+    console.error('[Route][calculate-fare] Error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: err.message
+    });
+  }
+});
+
 
 module.exports = router;

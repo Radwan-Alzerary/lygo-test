@@ -431,15 +431,53 @@ class CustomerSocketService {
     return true;
   }
 
-  async handleRideRequest(socket, customerId, rideData) {
+async handleRideRequest(socket, customerId, rideData) {
     this.logger.info(`[Socket.IO Customer] Received 'requestRide' from customer ${customerId}. Socket ID: ${socket.id}. Data: ${JSON.stringify(rideData)}`);
 
-    // Basic validation
-    if (!rideData || !rideData.origin || !rideData.destination ||
-      typeof rideData.origin.latitude !== "number" || typeof rideData.origin.longitude !== "number" ||
-      typeof rideData.destination.latitude !== "number" || typeof rideData.destination.longitude !== "number") {
+    // Updated validation to handle GeoJSON coordinate format
+    if (!rideData || !rideData.origin || !rideData.destination) {
       this.logger.warn(`[Socket.IO Customer] Invalid rideData received from customer ${customerId}. Data: ${JSON.stringify(rideData)}`);
       socket.emit("rideError", { message: "Invalid location data provided. Please try again." });
+      return;
+    }
+
+    // Handle both coordinate formats: {latitude, longitude} and {coordinates: [lng, lat]}
+    let originLat, originLng, destLat, destLng;
+
+    if (rideData.origin.coordinates && Array.isArray(rideData.origin.coordinates)) {
+      // GeoJSON format: coordinates: [longitude, latitude]
+      originLng = rideData.origin.coordinates[0];
+      originLat = rideData.origin.coordinates[1];
+    } else if (rideData.origin.latitude && rideData.origin.longitude) {
+      // Separate properties format
+      originLat = rideData.origin.latitude;
+      originLng = rideData.origin.longitude;
+    } else {
+      this.logger.warn(`[Socket.IO Customer] Invalid origin coordinates from customer ${customerId}. Data: ${JSON.stringify(rideData.origin)}`);
+      socket.emit("rideError", { message: "Invalid origin location data provided. Please try again." });
+      return;
+    }
+
+    if (rideData.destination.coordinates && Array.isArray(rideData.destination.coordinates)) {
+      // GeoJSON format: coordinates: [longitude, latitude]
+      destLng = rideData.destination.coordinates[0];
+      destLat = rideData.destination.coordinates[1];
+    } else if (rideData.destination.latitude && rideData.destination.longitude) {
+      // Separate properties format
+      destLat = rideData.destination.latitude;
+      destLng = rideData.destination.longitude;
+    } else {
+      this.logger.warn(`[Socket.IO Customer] Invalid destination coordinates from customer ${customerId}. Data: ${JSON.stringify(rideData.destination)}`);
+      socket.emit("rideError", { message: "Invalid destination location data provided. Please try again." });
+      return;
+    }
+
+    // Validate coordinate values
+    if (typeof originLat !== "number" || typeof originLng !== "number" ||
+        typeof destLat !== "number" || typeof destLng !== "number" ||
+        isNaN(originLat) || isNaN(originLng) || isNaN(destLat) || isNaN(destLng)) {
+      this.logger.warn(`[Socket.IO Customer] Invalid coordinate values from customer ${customerId}. Origin: [${originLng}, ${originLat}], Destination: [${destLng}, ${destLat}]`);
+      socket.emit("rideError", { message: "Invalid coordinate values provided. Please try again." });
       return;
     }
 
@@ -460,28 +498,29 @@ class CustomerSocketService {
       });
 
       if (existingRide) {
-        existingRide.status = "cancelled"; // Cancel existing ride}
+        existingRide.status = "cancelled"; // Cancel existing ride
         await existingRide.save();
       }
 
       // Calculate fare based on settings
       const distance = rideData.distance || 0;
       const duration = rideData.duration || 0;
-      const calculatedFare = this.calculateFare(distance, duration);
+      const calculatedFare = rideData.fareAmount || this.calculateFare(distance, duration);
 
       this.logger.info(`[Socket.IO Customer] Creating new ride for customer ${customerId}. Calculated fare: ${calculatedFare} ${this.rideSettings.fare.currency}`);
+      
       const newRide = new Ride({
         passenger: customerId,
         driver: null,
         pickupLocation: {
           type: 'Point',
           locationName: rideData.originPlaceName,
-          coordinates: [rideData.origin.longitude, rideData.origin.latitude],
+          coordinates: [originLng, originLat], // GeoJSON format: [longitude, latitude]
         },
         dropoffLocation: {
           type: 'Point',
           locationName: rideData.destinationPlaceName,
-          coordinates: [rideData.destination.longitude, rideData.destination.latitude],
+          coordinates: [destLng, destLat], // GeoJSON format: [longitude, latitude]
         },
         fare: {
           amount: calculatedFare,
@@ -511,16 +550,20 @@ class CustomerSocketService {
         message: "Ride requested. Searching for nearby captains..."
       });
 
-      // Start the dispatch process
-      this.logger.info(`[Dispatch] Starting dispatch process for ride ${newRide._id, rideData.origin}`);
-      this.dispatchRide(newRide, rideData.origin);
+      // Start the dispatch process - create origin object for dispatch
+      const originForDispatch = {
+        latitude: originLat,
+        longitude: originLng
+      };
+
+      this.logger.info(`[Dispatch] Starting dispatch process for ride ${newRide._id}`);
+      this.dispatchRide(newRide, originForDispatch);
 
     } catch (err) {
       this.logger.error(`[Socket.IO Customer] Error creating/broadcasting ride for customer ${customerId}:`, err);
       socket.emit("rideError", { message: "Failed to create ride. Please try again later." });
     }
   }
-
   async handleRideCancellation(socket, customerId, data) {
     const rideId = typeof data === 'object' ? data.rideId : data;
     if (!rideId) {

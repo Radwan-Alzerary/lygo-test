@@ -206,6 +206,65 @@ class DispatchService {
   }
 
   /**
+   * Validate dispatch settings before processing rides
+   */
+  validateDispatchSettings() {
+    if (!this.rideSettings || !this.rideSettings.dispatch) {
+      this.logger.error('[DispatchService] Ride settings not loaded or missing dispatch configuration');
+      return false;
+    }
+
+    const dispatch = this.rideSettings.dispatch;
+
+    // Validate radius settings
+    if (!dispatch.initialRadiusKm || !dispatch.maxRadiusKm || !dispatch.radiusIncrementKm) {
+      this.logger.error('[DispatchService] Missing radius settings in dispatch configuration');
+      return false;
+    }
+
+    if (dispatch.initialRadiusKm <= 0 || dispatch.maxRadiusKm <= 0 || dispatch.radiusIncrementKm <= 0) {
+      this.logger.error('[DispatchService] Invalid radius settings detected. All radius values must be positive.');
+      return false;
+    }
+
+    if (dispatch.initialRadiusKm > dispatch.maxRadiusKm) {
+      this.logger.error('[DispatchService] Initial radius cannot be greater than max radius.');
+      return false;
+    }
+
+    // Validate timeout settings
+    if (!dispatch.notificationTimeout || !dispatch.maxDispatchTime) {
+      this.logger.error('[DispatchService] Missing timeout settings in dispatch configuration');
+      return false;
+    }
+
+    if (dispatch.notificationTimeout <= 0 || dispatch.maxDispatchTime <= 0) {
+      this.logger.error('[DispatchService] Invalid timeout settings detected. Timeout values must be positive.');
+      return false;
+    }
+
+    if (dispatch.graceAfterMaxRadius < 0) {
+      this.logger.error('[DispatchService] Invalid grace period setting. Must be non-negative.');
+      return false;
+    }
+
+    // Warn about potentially problematic settings
+    if (dispatch.notificationTimeout > 60) {
+      this.logger.warn('[DispatchService] Notification timeout is very high (>60s). This may lead to poor user experience.');
+    }
+
+    if (dispatch.maxDispatchTime < 60) {
+      this.logger.warn('[DispatchService] Max dispatch time is very low (<60s). This may result in many failed dispatches.');
+    }
+
+    if (dispatch.initialRadiusKm > 5) {
+      this.logger.warn('[DispatchService] Initial radius is very large (>5km). This may overwhelm captains with notifications.');
+    }
+
+    return true;
+  }
+
+  /**
    * Log current settings for monitoring
    */
   logCurrentSettings() {
@@ -1133,24 +1192,195 @@ class DispatchService {
   // ===========================================================================================
 
   /**
-   * Check if dispatch should stop due to timeout or ride state change
+   * Process captains in current radius with queue management
    */
-  async shouldStopDispatch(rideId, startTime, maxDispatchTime) {
-    // Check overall timeout
-    const elapsedTime = Date.now() - startTime;
-    if (elapsedTime >= maxDispatchTime) {
-      this.logger.warn(`[Dispatch] ⏱️ Max dispatch time exceeded for ride ${rideId}: ${elapsedTime / 1000}s`);
-      return true;
+  async processRadius(rideId, nearbyCaptainIds, globalNotifiedCaptains, ride, passenger, config) {
+    const newOnlineCaptains = nearbyCaptainIds.filter(captainId =>
+      this.onlineCaptains[captainId] && !globalNotifiedCaptains.has(captainId)
+    );
+
+    if (newOnlineCaptains.length === 0) {
+      this.logger.info(`[Dispatch] 👥 Ride ${rideId}: All nearby captains already notified or offline`);
+      return { accepted: false, shouldStop: false };
     }
 
-    // Check ride state
-    const currentRideState = await Ride.findById(rideId).select('status');
-    if (!currentRideState || currentRideState.status !== 'requested') {
-      this.logger.warn(`[Dispatch] 🔄 Ride ${rideId} state changed: ${currentRideState?.status}`);
-      return true;
+    this.logger.info(`[Dispatch] 👥 Ride ${rideId}: Found ${newOnlineCaptains.length} new online captains`);
+
+    const rideData = this.prepareRideData(ride, passenger);
+    const notifications = await this.sendNotificationsWithQueue(rideId, newOnlineCaptains, globalNotifiedCaptains, rideData);
+
+    this.logger.info(`[Dispatch] 📤 Ride ${rideId}: Processed ${notifications.sent} immediate + ${notifications.queued} queued notifications`);
+
+    // Wait for responses if any notifications were sent immediately
+    if (notifications.sent > 0) {
+      this.logger.debug(`[Dispatch] ⏳ Ride ${rideId}: Waiting ${config.dispatch.notificationTimeout}s for responses`);
+      await new Promise(resolve => setTimeout(resolve, config.notificationTimeout));
+
+      // Check if ride was accepted
+      const updatedRide = await Ride.findById(rideId).select('status driver');
+      if (updatedRide && updatedRide.status === "accepted") {
+        this.logger.info(`[Dispatch] ✅ Ride ${rideId} was accepted by captain ${updatedRide.driver}`);
+        this.notifyCaptainsToHideRide(rideId, updatedRide.driver);
+        return { accepted: true, shouldStop: false };
+      }
+
+      // Hide from current radius captains if expanding radius
+      const currentRadius = config.dispatch.initialRadiusKm + (nearbyCaptainIds.length * config.dispatch.radiusIncrementKm);
+      this.notifyCurrentRadiusCaptainsToHide(rideId, `timeout_radius_${currentRadius}km`);
     }
 
-    return false;
+    return { accepted: false, shouldStop: false };
+  }
+
+  /**
+   * Handle dispatch completion outcome
+   */
+  async handleDispatchOutcome(rideId, accepted, cancelDispatch, startTime, dispatch, ride) {
+    const dispatchDuration = Date.now() - startTime;
+    const finalRideState = await Ride.findById(rideId);
+
+    if (accepted) {
+      this.dispatchMetrics.successfulDispatches++;
+      this.updateAverageDispatchTime(dispatchDuration);
+      this.logger.info(`[Dispatch] ✅ Ride ${rideId} successfully dispatched in ${dispatchDuration / 1000}s`);
+    } else if (cancelDispatch) {
+      await this.handleDispatchTimeout(rideId, finalRideState, startTime, dispatch.maxRadiusKm);
+    } else {
+      await this.handleMaxRadiusReached(rideId, finalRideState, startTime, dispatch);
+    }
+  }
+
+  /**
+   * Handle dispatch timeout
+   */
+  async handleDispatchTimeout(rideId, rideState, startTime, maxRadius) {
+    if (rideState && rideState.status === 'requested') {
+      await this.updateRideToNotApprove(rideState, `Dispatch timeout after ${(Date.now() - startTime) / 1000}s`);
+      this.notifyCaptainsToHideRide(rideId, null, 'dispatch_timeout');
+      this.notifyCustomerRideNotApproved(rideState, startTime, maxRadius);
+    }
+    this.dispatchMetrics.timeoutDispatches++;
+  }
+
+  /**
+   * Handle max radius reached
+   */
+  async handleMaxRadiusReached(rideId, rideState, startTime, dispatch) {
+    this.logger.warn(`[Dispatch] 🎯 Ride ${rideId}: Max radius ${dispatch.maxRadiusKm}km reached. Starting grace period.`);
+    
+    const graceResult = await this.handleGracePeriod(rideId, dispatch.graceAfterMaxRadius * 1000);
+    
+    if (!graceResult.accepted && rideState && rideState.status === 'requested') {
+      await this.updateRideToNotApprove(rideState, `No captain found within ${dispatch.maxRadiusKm}km radius`);
+      this.notifyCaptainsToHideRide(rideId, null, 'max_radius_reached');
+      this.notifyCustomerRideNotApproved(rideState, startTime, dispatch.maxRadiusKm);
+      this.dispatchMetrics.failedDispatches++;
+    }
+  }
+
+  /**
+   * Handle grace period after max radius
+   */
+  async handleGracePeriod(rideId, gracePeriod) {
+    const pollInterval = 5000;
+    const endTime = Date.now() + gracePeriod;
+
+    while (Date.now() < endTime) {
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      
+      const ride = await Ride.findById(rideId).select('status driver');
+      if (ride?.status === 'accepted') {
+        this.logger.info(`[Dispatch] ✅ Ride ${rideId} accepted during grace period by captain ${ride.driver}`);
+        this.notifyCaptainsToHideRide(rideId, ride.driver);
+        return { accepted: true, driver: ride.driver };
+      }
+    }
+
+    return { accepted: false };
+  }
+
+  /**
+   * Update ride to not approved status
+   */
+  async updateRideToNotApprove(ride, reason) {
+    ride.status = 'notApprove';
+    ride.isDispatching = false;
+    ride.dispatchEndTime = new Date();
+    ride.cancellationReason = reason;
+    await ride.save();
+    this.logger.info(`[DB] 📝 Ride ${ride._id} updated to 'notApprove': ${reason}`);
+  }
+
+  /**
+   * Notify customer of ride not approved
+   */
+  notifyCustomerRideNotApproved(ride, startTime, maxRadius) {
+    if (this.customerSocketService) {
+      this.customerSocketService.emitToCustomer(ride.passenger, 'rideNotApproved', {
+        rideId: ride._id,
+        message: "We couldn't find a nearby captain in time. Please try requesting again.",
+        searchDuration: Math.round((Date.now() - startTime) / 1000),
+        maxRadius: maxRadius
+      });
+    }
+  }
+
+  /**
+   * Handle dispatch errors
+   */
+  async handleDispatchError(rideId, error, ride) {
+    this.logger.error(`[Dispatch] ❌ Error during dispatch process for ride ${rideId}:`, error);
+    this.dispatchMetrics.failedDispatches++;
+    this.errorRecovery.consecutiveFailures++;
+    this.errorRecovery.lastFailureTime = new Date();
+
+    // Check if circuit breaker should open
+    if (this.errorRecovery.consecutiveFailures >= 5) {
+      this.errorRecovery.circuitBreakerOpen = true;
+      this.logger.error('[Dispatch] 🚨 Circuit breaker opened due to consecutive failures');
+      
+      // Auto-close circuit breaker after 5 minutes
+      setTimeout(() => {
+        this.errorRecovery.circuitBreakerOpen = false;
+        this.errorRecovery.consecutiveFailures = 0;
+        this.logger.info('[Dispatch] 🔓 Circuit breaker closed - service restored');
+      }, 300000);
+    }
+
+    try {
+      const rideToUpdate = await Ride.findById(rideId);
+      if (rideToUpdate && rideToUpdate.status === 'requested') {
+        await this.updateRideToNotApprove(rideToUpdate, `Dispatch error: ${error.message}`);
+        this.notifyCaptainsToHideRide(rideId, null, 'dispatch_error');
+        
+        if (this.customerSocketService) {
+          this.customerSocketService.emitToCustomer(rideToUpdate.passenger, 'rideError', {
+            rideId: rideToUpdate._id,
+            message: 'An error occurred while searching for captains. Please try again.',
+          });
+        }
+      }
+    } catch (saveErr) {
+      this.logger.error(`[Dispatch] Failed to update ride ${rideId} after error:`, saveErr);
+    }
+  }
+
+  /**
+   * Cleanup dispatch process
+   */
+  cleanupDispatchProcess(rideId, accepted) {
+    // Remove from dispatch processes
+    if (this.dispatchProcesses.has(rideId)) {
+      this.dispatchProcesses.delete(rideId);
+      this.logger.debug(`[Dispatch] 🧹 Cleaned up dispatch process for ride ${rideId}`);
+    }
+    
+    // Clean up notifications if ride was not accepted
+    if (!accepted) {
+      this.cleanupRideNotifications(rideId);
+    }
+    
+    this.updateMemoryUsage();
   }
 
   /**

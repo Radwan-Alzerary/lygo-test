@@ -208,54 +208,79 @@ class CustomerSocketService {
     }
   }
 
-  async restoreRideState(socket, customerId) {
-    try {
-      this.logger.info(`[Socket.IO Customer] Checking for existing rides for customer ${customerId}`);
+async restoreRideState(socket, customerId) {
+  try {
+    this.logger.info(`[Socket.IO Customer] Checking for existing rides for customer ${customerId}`);
+    
+    // Only look for truly active rides + very recent completed rides
+    const activeRides = await Ride.find({
+      passenger: customerId,
+      status: { $in: ['requested', 'accepted', 'arrived', 'onRide'] },
+      createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Last 24 hours
+    }).populate('driver', 'name carDetails phoneNumber')
+      .sort({ createdAt: -1 })
+      .limit(1); // Only get the most recent active ride
 
-      // Calculate time threshold (e.g., only rides from last 24 hours)
-      const timeThreshold = new Date();
-      timeThreshold.setHours(timeThreshold.getHours() - 24);
+    // Check for very recent completed rides (last 30 minutes) for rating
+    const recentCompleted = await Ride.find({
+      passenger: customerId,
+      status: 'completed',
+      updatedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) } // Last 30 minutes
+    }).populate('driver', 'name carDetails phoneNumber')
+      .sort({ updatedAt: -1 })
+      .limit(1);
 
-      // Only query for truly ACTIVE rides + recent completed/cancelled for notification
-      const activeRides = await Ride.find({
-        passenger: customerId,
-        status: { $in: ['requested', 'accepted', 'arrived', 'onRide'] }, // Only active statuses
-        createdAt: { $gte: timeThreshold } // Only recent rides
-      }).populate('driver', 'name carDetails phoneNumber');
+    let rideToRestore = null;
 
-      // Separately query for very recent completed/cancelled rides (last 30 minutes)
-      const recentTimeThreshold = new Date();
-      recentTimeThreshold.setMinutes(recentTimeThreshold.getMinutes() - 30);
-
-      const recentCompletedRides = await Ride.find({
-        passenger: customerId,
-        status: { $in: ['completed', 'cancelled', 'notApprove'] },
-        updatedAt: { $gte: recentTimeThreshold } // Only very recent status changes
-      }).populate('driver', 'name carDetails phoneNumber');
-
-      const allRidesToRestore = [...activeRides, ...recentCompletedRides];
-
-      this.logger.info(`[DB] Found ${allRidesToRestore.length} relevant rides for customer ${customerId} (${activeRides.length} active, ${recentCompletedRides.length} recent completed)`);
-
-      for (const ride of allRidesToRestore) {
-        this.logger.info(`[Socket.IO Customer] Processing ride ${ride._id} with status ${ride.status} for customer ${customerId}`);
-        let captainInfo = null;
-
-        if (ride.driver && ride.status !== 'requested' && ride.status !== 'notApprove' && ride.status !== 'cancelled') {
-          captainInfo = ride.driver ? {
-            name: ride.driver.name,
-            vehicle: ride.driver.carDetails,
-            phoneNumber: ride.driver.phoneNumber,
-          } : null;
-        }
-
-        this.emitRideStatus(socket, ride, captainInfo);
-      }
-    } catch (err) {
-      this.logger.error(`[Socket.IO Customer] Error checking/notifying customer ${customerId} about rides:`, err);
+    if (activeRides.length > 0) {
+      rideToRestore = activeRides[0];
+      this.logger.info(`[Socket.IO Customer] Found active ride ${rideToRestore._id} with status ${rideToRestore.status}`);
+    } else if (recentCompleted.length > 0) {
+      rideToRestore = recentCompleted[0];
+      this.logger.info(`[Socket.IO Customer] Found recent completed ride ${rideToRestore._id} for rating`);
     }
+
+    if (rideToRestore) {
+      // Prepare comprehensive ride data
+      const rideData = {
+        rideId: rideToRestore._id,
+        status: rideToRestore.status,
+        pickupLocation: rideToRestore.pickupLocation,
+        dropoffLocation: rideToRestore.dropoffLocation,
+        distance: rideToRestore.distance,
+        duration: rideToRestore.duration,
+        fare: rideToRestore.fare,
+        paymentMethod: rideToRestore.paymentMethod,
+        createdAt: rideToRestore.createdAt,
+        updatedAt: rideToRestore.updatedAt
+      };
+
+      // Add driver info if available and ride is not in initial states
+      if (rideToRestore.driver && !['requested', 'notApprove', 'cancelled'].includes(rideToRestore.status)) {
+        rideData.driverInfo = {
+          name: rideToRestore.driver.name,
+          vehicle: rideToRestore.driver.carDetails,
+          phoneNumber: rideToRestore.driver.phoneNumber,
+        };
+      }
+
+      // Send comprehensive restoration event
+      this.logger.info(`[Socket.IO Customer] Sending ride restoration data for ride ${rideToRestore._id}`);
+      socket.emit('rideRestored', rideData);
+
+      // Then send the appropriate status event based on current status
+      this.emitRideStatus(socket, rideToRestore, rideData.driverInfo);
+
+    } else {
+      this.logger.info(`[Socket.IO Customer] No active or recent rides found for customer ${customerId}`);
+    }
+
+  } catch (err) {
+    this.logger.error(`[Socket.IO Customer] Error restoring ride state for customer ${customerId}:`, err);
   }
-  emitRideStatus(socket, ride, captainInfo) {
+}
+
+emitRideStatus(socket, ride, captainInfo) {
     const rideId = ride._id;
 
     switch (ride.status) {

@@ -211,14 +211,33 @@ class CustomerSocketService {
   async restoreRideState(socket, customerId) {
     try {
       this.logger.info(`[Socket.IO Customer] Checking for existing rides for customer ${customerId}`);
-      const rides = await Ride.find({
+
+      // Calculate time threshold (e.g., only rides from last 24 hours)
+      const timeThreshold = new Date();
+      timeThreshold.setHours(timeThreshold.getHours() - 24);
+
+      // Only query for truly ACTIVE rides + recent completed/cancelled for notification
+      const activeRides = await Ride.find({
         passenger: customerId,
-        status: { $in: ['requested', 'accepted', 'notApprove', 'cancelled', 'arrived', 'onRide', 'completed'] },
+        status: { $in: ['requested', 'accepted', 'arrived', 'onRide'] }, // Only active statuses
+        createdAt: { $gte: timeThreshold } // Only recent rides
       }).populate('driver', 'name carDetails phoneNumber');
 
-      this.logger.info(`[DB] Found ${rides.length} relevant rides for customer ${customerId}`);
+      // Separately query for very recent completed/cancelled rides (last 30 minutes)
+      const recentTimeThreshold = new Date();
+      recentTimeThreshold.setMinutes(recentTimeThreshold.getMinutes() - 30);
 
-      for (const ride of rides) {
+      const recentCompletedRides = await Ride.find({
+        passenger: customerId,
+        status: { $in: ['completed', 'cancelled', 'notApprove'] },
+        updatedAt: { $gte: recentTimeThreshold } // Only very recent status changes
+      }).populate('driver', 'name carDetails phoneNumber');
+
+      const allRidesToRestore = [...activeRides, ...recentCompletedRides];
+
+      this.logger.info(`[DB] Found ${allRidesToRestore.length} relevant rides for customer ${customerId} (${activeRides.length} active, ${recentCompletedRides.length} recent completed)`);
+
+      for (const ride of allRidesToRestore) {
         this.logger.info(`[Socket.IO Customer] Processing ride ${ride._id} with status ${ride.status} for customer ${customerId}`);
         let captainInfo = null;
 
@@ -236,7 +255,6 @@ class CustomerSocketService {
       this.logger.error(`[Socket.IO Customer] Error checking/notifying customer ${customerId} about rides:`, err);
     }
   }
-
   emitRideStatus(socket, ride, captainInfo) {
     const rideId = ride._id;
 
@@ -431,7 +449,7 @@ class CustomerSocketService {
     return true;
   }
 
-async handleRideRequest(socket, customerId, rideData) {
+  async handleRideRequest(socket, customerId, rideData) {
     this.logger.info(`[Socket.IO Customer] Received 'requestRide' from customer ${customerId}. Socket ID: ${socket.id}. Data: ${JSON.stringify(rideData)}`);
 
     // Updated validation to handle GeoJSON coordinate format
@@ -474,8 +492,8 @@ async handleRideRequest(socket, customerId, rideData) {
 
     // Validate coordinate values
     if (typeof originLat !== "number" || typeof originLng !== "number" ||
-        typeof destLat !== "number" || typeof destLng !== "number" ||
-        isNaN(originLat) || isNaN(originLng) || isNaN(destLat) || isNaN(destLng)) {
+      typeof destLat !== "number" || typeof destLng !== "number" ||
+      isNaN(originLat) || isNaN(originLng) || isNaN(destLat) || isNaN(destLng)) {
       this.logger.warn(`[Socket.IO Customer] Invalid coordinate values from customer ${customerId}. Origin: [${originLng}, ${originLat}], Destination: [${destLng}, ${destLat}]`);
       socket.emit("rideError", { message: "Invalid coordinate values provided. Please try again." });
       return;
@@ -508,7 +526,7 @@ async handleRideRequest(socket, customerId, rideData) {
       const calculatedFare = rideData.fareAmount || this.calculateFare(distance, duration);
 
       this.logger.info(`[Socket.IO Customer] Creating new ride for customer ${customerId}. Calculated fare: ${calculatedFare} ${this.rideSettings.fare.currency}`);
-      
+
       const newRide = new Ride({
         passenger: customerId,
         driver: null,

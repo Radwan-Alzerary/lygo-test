@@ -225,6 +225,7 @@ async restoreRideState(socket, customerId) {
     const recentCompleted = await Ride.find({
       passenger: customerId,
       status: 'completed',
+      passengerRating:null,
       updatedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) } // Last 30 minutes
     }).populate('driver', 'name carDetails phoneNumber')
       .sort({ updatedAt: -1 })

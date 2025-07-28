@@ -14,9 +14,28 @@ const { findNearbyCaptains } = require("../utils/helpers");
 class DispatchService {
   constructor(logger, dependencies) {
     this.logger = logger;
+    
+    // Validate dependencies
+    if (!dependencies) {
+      throw new Error('Dependencies object is required');
+    }
+    
+    if (!logger || typeof logger.info !== 'function') {
+      throw new Error('Valid logger instance is required');
+    }
+    
     this.redisClient = dependencies.redisClient;
     this.onlineCaptains = dependencies.onlineCaptains;
     this.dispatchProcesses = dependencies.dispatchProcesses;
+    
+    // Validate required dependencies
+    if (!this.onlineCaptains || typeof this.onlineCaptains !== 'object') {
+      throw new Error('onlineCaptains dependency is required and must be an object');
+    }
+    
+    if (!this.dispatchProcesses || typeof this.dispatchProcesses !== 'object') {
+      throw new Error('dispatchProcesses dependency is required and must be an object');
+    }
     
     // Service dependencies - injected after creation for circular dependency resolution
     this.captainSocketService = dependencies.captainSocketService || null;
@@ -190,13 +209,18 @@ class DispatchService {
    * Validate settings and enforce reasonable limits
    */
   validateAndEnforceSettingsLimits() {
+    if (!this.rideSettings || !this.rideSettings.dispatch) {
+      this.logger.error('[DispatchService] Invalid ride settings structure');
+      return;
+    }
+    
     const dispatch = this.rideSettings.dispatch;
     
-    // Enforce minimum values
-    dispatch.initialRadiusKm = Math.max(0.5, Math.min(dispatch.initialRadiusKm, 5));
-    dispatch.maxRadiusKm = Math.max(dispatch.initialRadiusKm, Math.min(dispatch.maxRadiusKm, 50));
-    dispatch.notificationTimeout = Math.max(5, Math.min(dispatch.notificationTimeout, 60));
-    dispatch.maxDispatchTime = Math.max(60, Math.min(dispatch.maxDispatchTime, 1800));
+    // Enforce minimum values with null safety
+    dispatch.initialRadiusKm = Math.max(0.5, Math.min(dispatch.initialRadiusKm || 2, 5));
+    dispatch.maxRadiusKm = Math.max(dispatch.initialRadiusKm, Math.min(dispatch.maxRadiusKm || 10, 50));
+    dispatch.notificationTimeout = Math.max(5, Math.min(dispatch.notificationTimeout || 15, 60));
+    dispatch.maxDispatchTime = Math.max(60, Math.min(dispatch.maxDispatchTime || 300, 1800));
     
     // Queue-specific limits
     dispatch.maxQueueLength = Math.max(1, Math.min(dispatch.maxQueueLength || 10, 20));
@@ -308,19 +332,31 @@ class DispatchService {
    * Add ride to captain's queue with advanced metadata
    */
   addRideToQueue(captainId, rideData) {
+    if (!captainId) {
+      this.logger.error('[Queue] No captain ID provided for adding to queue');
+      return null;
+    }
+    
+    if (!rideData || !rideData.rideId) {
+      this.logger.error(`[Queue] Invalid ride data for captain ${captainId}`);
+      return null;
+    }
+    
     if (!this.captainRideQueues.has(captainId)) {
       this.captainRideQueues.set(captainId, []);
     }
     
     const queue = this.captainRideQueues.get(captainId);
-    const maxQueueLength = this.rideSettings.dispatch.maxQueueLength || 10;
+    const maxQueueLength = this.rideSettings?.dispatch?.maxQueueLength || 10;
     
     // Check queue length limit
     if (queue.length >= maxQueueLength) {
       this.logger.warn(`[Queue] Captain ${captainId} queue is full (${queue.length}/${maxQueueLength}). Removing oldest ride.`);
       const removedRide = queue.shift();
-      this.performanceCounters.currentQueuedRides--;
-      this.logger.info(`[Queue] Removed ride ${removedRide.rideId} from captain ${captainId} queue (queue full)`);
+      if (removedRide) {
+        this.performanceCounters.currentQueuedRides--;
+        this.logger.info(`[Queue] Removed ride ${removedRide.rideId} from captain ${captainId} queue (queue full)`);
+      }
     }
     
     // Add enhanced metadata
@@ -410,6 +446,11 @@ class DispatchService {
    */
   async processNextRideInQueue(captainId) {
     try {
+      if (!captainId) {
+        this.logger.error('[Queue] No captain ID provided for queue processing');
+        return false;
+      }
+      
       const queue = this.captainRideQueues.get(captainId);
       if (!queue || queue.length === 0) {
         this.logger.debug(`[Queue] No rides in queue for captain ${captainId}`);
@@ -425,23 +466,32 @@ class DispatchService {
       // Check if captain is still online
       if (!this.onlineCaptains[captainId]) {
         this.logger.warn(`[Queue] Captain ${captainId} is offline. Clearing queue.`);
-        this.clearCaptainQueue(captainId);
+        this.clearCaptainQueue(captainId, 'captain_offline');
         return false;
       }
 
       // Get next ride (sort by priority first)
       queue.sort((a, b) => (b.priority || 100) - (a.priority || 100));
       const nextRideData = queue.shift();
+      
+      if (!nextRideData) {
+        this.logger.warn(`[Queue] No ride data found in queue for captain ${captainId}`);
+        return false;
+      }
+      
       this.performanceCounters.currentQueuedRides--;
       
       // Calculate queue wait time for metrics
-      const queueWaitTime = Date.now() - new Date(nextRideData.queuedAt).getTime();
-      this.updateAverageQueueWaitTime(queueWaitTime);
+      let queueWaitTime = 0;
+      if (nextRideData.queuedAt) {
+        queueWaitTime = Date.now() - new Date(nextRideData.queuedAt).getTime();
+        this.updateAverageQueueWaitTime(queueWaitTime);
+      }
       
       this.logger.info(`[Queue] Processing ride ${nextRideData.rideId} for captain ${captainId}. Waited ${Math.floor(queueWaitTime / 1000)}s. Queue remaining: ${queue.length}`);
 
       // Add processing delay to prevent overwhelming captain
-      const delay = this.rideSettings.dispatch.queueProcessingDelay || 2000;
+      const delay = this.rideSettings?.dispatch?.queueProcessingDelay || 2000;
       
       setTimeout(async () => {
         await this.validateAndSendQueuedRide(captainId, nextRideData);
@@ -540,6 +590,16 @@ class DispatchService {
       this.logger.error(`[Queue] CaptainSocketService not available for captain ${captainId}`);
       return false;
     }
+    
+    if (!captainId) {
+      this.logger.error('[Queue] No captain ID provided for notification');
+      return false;
+    }
+    
+    if (!rideData || !rideData.rideId) {
+      this.logger.error(`[Queue] Invalid ride data for captain ${captainId}`);
+      return false;
+    }
 
     try {
       const sent = this.captainSocketService.emitToCaptain(captainId, "newRide", {
@@ -547,18 +607,18 @@ class DispatchService {
         pickupLocation: rideData.pickupLocation,
         dropoffLocation: rideData.dropoffLocation,
         fare: rideData.fare,
-        currency: rideData.currency,
-        distance: rideData.distance,
-        duration: rideData.duration,
-        paymentMethod: rideData.paymentMethod,
-        pickupName: rideData.pickupName,
-        dropoffName: rideData.dropoffName,
-        passengerInfo: rideData.passengerInfo,
+        currency: rideData.currency || 'IQD',
+        distance: rideData.distance || 0,
+        duration: rideData.duration || 0,
+        paymentMethod: rideData.paymentMethod || 'cash',
+        pickupName: rideData.pickupName || 'Unknown pickup',
+        dropoffName: rideData.dropoffName || 'Unknown destination',
+        passengerInfo: rideData.passengerInfo || {},
         // Metadata (not exposed to client)
         _queueMetadata: {
           wasQueued: !!rideData.queuedAt,
           queueWaitTime: rideData.queuedAt ? Date.now() - new Date(rideData.queuedAt).getTime() : 0,
-          priority: rideData.priority
+          priority: rideData.priority || 100
         }
       });
 
@@ -627,6 +687,11 @@ class DispatchService {
    */
   handlePendingRideTimeout(captainId, rideId) {
     try {
+      if (!captainId || !rideId) {
+        this.logger.error('[Queue] Invalid parameters for pending ride timeout handling');
+        return;
+      }
+      
       // Record timeout in captain history
       this.recordCaptainResponse(captainId, rideId, 'timeout', Date.now());
       
@@ -652,8 +717,10 @@ class DispatchService {
   clearCaptainPendingRide(captainId) {
     const pendingRide = this.captainPendingRides.get(captainId);
     if (pendingRide) {
-      // Clear timeout
-      clearTimeout(pendingRide.timeoutId);
+      // Clear timeout to prevent memory leaks
+      if (pendingRide.timeoutId) {
+        clearTimeout(pendingRide.timeoutId);
+      }
       
       // Remove from pending
       this.captainPendingRides.delete(captainId);
@@ -680,7 +747,7 @@ class DispatchService {
     
     this.captainRideQueues.delete(captainId);
     
-    // Clear any queue processing timeout
+    // Clear any queue processing timeout to prevent memory leaks
     const queueTimeout = this.queueProcessingTimeouts.get(captainId);
     if (queueTimeout) {
       clearTimeout(queueTimeout);
@@ -1134,19 +1201,41 @@ class DispatchService {
    * Prepare comprehensive ride data
    */
   prepareRideData(ride, passenger) {
+    // Validate input data
+    if (!ride) {
+      this.logger.error('[DispatchService] Cannot prepare ride data - ride is null/undefined');
+      return null;
+    }
+    
+    if (!ride.pickupLocation || !ride.pickupLocation.coordinates) {
+      this.logger.error('[DispatchService] Cannot prepare ride data - invalid pickup location');
+      return null;
+    }
+    
+    if (!ride.dropoffLocation || !ride.dropoffLocation.coordinates) {
+      this.logger.error('[DispatchService] Cannot prepare ride data - invalid dropoff location');
+      return null;
+    }
+    
+    if (!ride.fare || typeof ride.fare.amount !== 'number') {
+      this.logger.error('[DispatchService] Cannot prepare ride data - invalid fare');
+      return null;
+    }
+    
     return {
+      rideId: ride._id?.toString() || ride.id?.toString(),
       pickupLocation: ride.pickupLocation.coordinates,
       dropoffLocation: ride.dropoffLocation.coordinates,
       fare: ride.fare.amount,
-      currency: ride.fare.currency,
-      distance: ride.distance,
-      duration: ride.duration,
-      paymentMethod: ride.paymentMethod,
-      pickupName: ride.pickupLocation.locationName,
-      dropoffName: ride.dropoffLocation.locationName,
+      currency: ride.fare.currency || 'IQD',
+      distance: ride.distance || 0,
+      duration: ride.duration || 0,
+      paymentMethod: ride.paymentMethod || 'cash',
+      pickupName: ride.pickupLocation.locationName || 'Unknown pickup',
+      dropoffName: ride.dropoffLocation.locationName || 'Unknown destination',
       passengerInfo: {
         id: passenger?._id,
-        name: passenger?.name,
+        name: passenger?.name || 'Unknown passenger',
         phoneNumber: passenger?.phoneNumber,
       },
       metadata: {
@@ -1163,6 +1252,12 @@ class DispatchService {
   calculateRideUrgency(ride) {
     let urgency = 'normal';
     
+    // Validate ride data
+    if (!ride || !ride.fare || typeof ride.fare.amount !== 'number' || typeof ride.distance !== 'number') {
+      this.logger.warn('[DispatchService] Invalid ride data for urgency calculation');
+      return urgency;
+    }
+    
     if (ride.fare.amount > 10000) urgency = 'high';
     else if (ride.distance < 2) urgency = 'high'; // Short rides for quick turnaround
     else if (ride.fare.amount < 3000) urgency = 'low';
@@ -1174,6 +1269,12 @@ class DispatchService {
    * Calculate estimated earnings for captain
    */
   calculateEstimatedEarnings(ride) {
+    // Validate ride data
+    if (!ride || !ride.fare || typeof ride.fare.amount !== 'number') {
+      this.logger.warn('[DispatchService] Invalid ride data for earnings calculation');
+      return 0;
+    }
+    
     // This would include platform commission calculations
     const platformCommission = ride.fare.amount * 0.15; // 15% commission
     return Math.round(ride.fare.amount - platformCommission);
@@ -1187,6 +1288,11 @@ class DispatchService {
    * Check if dispatch should stop due to timeout or ride state change
    */
   async shouldStopDispatch(rideId, startTime, maxDispatchTime) {
+    if (!rideId || !startTime || !maxDispatchTime) {
+      this.logger.error('[Dispatch] Invalid parameters for shouldStopDispatch check');
+      return true;
+    }
+    
     // Check overall timeout
     const elapsedTime = Date.now() - startTime;
     if (elapsedTime >= maxDispatchTime) {
@@ -1194,11 +1300,16 @@ class DispatchService {
       return true;
     }
 
-    // Check ride state
-    const currentRideState = await Ride.findById(rideId).select('status');
-    if (!currentRideState || currentRideState.status !== 'requested') {
-      this.logger.warn(`[Dispatch] 🔄 Ride ${rideId} state changed: ${currentRideState?.status}`);
-      return true;
+    try {
+      // Check ride state
+      const currentRideState = await Ride.findById(rideId).select('status');
+      if (!currentRideState || currentRideState.status !== 'requested') {
+        this.logger.warn(`[Dispatch] 🔄 Ride ${rideId} state changed: ${currentRideState?.status || 'not found'}`);
+        return true;
+      }
+    } catch (error) {
+      this.logger.error(`[Dispatch] Error checking ride state for ${rideId}:`, error);
+      return true; // Stop dispatch on database errors
     }
 
     return false;
@@ -1209,6 +1320,11 @@ class DispatchService {
    */
   async getPassengerInfo(passengerId) {
     try {
+      if (!passengerId) {
+        this.logger.warn('[DispatchService] No passenger ID provided');
+        return null;
+      }
+      
       return await customer.findById(passengerId)
         .select("name phoneNumber")
         .lean();
@@ -1514,6 +1630,11 @@ class DispatchService {
    * Update average queue wait time
    */
   updateAverageQueueWaitTime(newWaitTime) {
+    if (typeof newWaitTime !== 'number' || newWaitTime < 0) {
+      this.logger.warn('[DispatchService] Invalid wait time for metrics update');
+      return;
+    }
+    
     const currentAverage = this.dispatchMetrics.averageQueueWaitTime;
     const totalQueued = this.dispatchMetrics.totalQueuedRides;
     

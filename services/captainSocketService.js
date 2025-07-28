@@ -78,6 +78,12 @@ class CaptainSocketService {
       circuitBreakerOpen: false
     };
     
+    // 🔄 INTERVAL MANAGEMENT (for cleanup)
+    this.intervals = {
+      performanceMonitoring: null,
+      healthMonitoring: null
+    };
+    
     // Start monitoring
     this.startPerformanceMonitoring();
     
@@ -93,6 +99,9 @@ class CaptainSocketService {
    */
   async initialize() {
     try {
+      // Validate dependencies
+      this.validateDependencies();
+      
       await this.loadRideSettings();
       this.setupCaptainNamespace();
       this.startHealthMonitoring();
@@ -101,6 +110,35 @@ class CaptainSocketService {
       this.logger.error('[CaptainSocketService] Failed to initialize:', error);
       throw new Error(`CaptainSocketService initialization failed: ${error.message}`);
     }
+  }
+
+  /**
+   * Validate that all required dependencies are properly injected
+   */
+  validateDependencies() {
+    const requiredDependencies = [
+      'onlineCustomers',
+      'onlineCaptains', 
+      'dispatchProcesses',
+      'rideSharingMap',
+      'calculateDistance'
+    ];
+    
+    const missingDependencies = requiredDependencies.filter(dep => !this[dep]);
+    
+    if (missingDependencies.length > 0) {
+      throw new Error(`Missing required dependencies: ${missingDependencies.join(', ')}`);
+    }
+    
+    // Warn about optional dependencies
+    const optionalDependencies = ['redisClient', 'dispatchService', 'customerSocketService'];
+    const missingOptional = optionalDependencies.filter(dep => !this[dep]);
+    
+    if (missingOptional.length > 0) {
+      this.logger.warn(`[CaptainSocketService] Missing optional dependencies: ${missingOptional.join(', ')}. Some features may be limited.`);
+    }
+    
+    this.logger.info('[CaptainSocketService] Dependencies validated successfully');
   }
 
   /**
@@ -358,6 +396,9 @@ class CaptainSocketService {
       // Setup event listeners
       this.setupEventListeners(socket, captainId);
 
+      // Reset error recovery on successful authentication
+      this.resetErrorRecovery();
+
       this.connectionMetrics.authenticatedConnections++;
       this.logger.info(`[Socket.IO Captain] ✅ Captain ${captainId} authenticated successfully. Socket ID: ${socket.id}`);
 
@@ -380,13 +421,13 @@ class CaptainSocketService {
         return { eligible: false, reason: "Captain not found in database" };
       }
 
-      // if (!captain.isActive) {
-      //   return { eligible: false, reason: "Captain account is deactivated" };
-      // }
+      if (!captain.isActive) {
+        return { eligible: false, reason: "Captain account is deactivated" };
+      }
 
-      // if (!captain.isVerified) {
-      //   return { eligible: false, reason: "Captain account is not verified" };
-      // }
+      if (!captain.isVerified) {
+        return { eligible: false, reason: "Captain account is not verified" };
+      }
 
       // Check minimum rating
       const minRating = this.rideSettings.captainRules.minRating;
@@ -713,13 +754,26 @@ class CaptainSocketService {
    */
   async getCaptainLocation(captainId) {
     try {
+      if (!this.redisClient) {
+        this.logger.warn(`[Redis] Redis client not available for captain ${captainId} location`);
+        return null;
+      }
+
       const location = await this.redisClient.geoPos("captains", captainId);
       if (location && location.length > 0 && location[0]) {
         const { longitude: lonStr, latitude: latStr } = location[0];
-        return {
-          longitude: parseFloat(lonStr),
-          latitude: parseFloat(latStr)
-        };
+        const longitude = parseFloat(lonStr);
+        const latitude = parseFloat(latStr);
+        
+        // Validate coordinates
+        if (isNaN(longitude) || isNaN(latitude) || 
+            longitude < -180 || longitude > 180 || 
+            latitude < -90 || latitude > 90) {
+          this.logger.warn(`[Redis] Invalid coordinates for captain ${captainId}: [${longitude}, ${latitude}]`);
+          return null;
+        }
+        
+        return { longitude, latitude };
       }
       return null;
     } catch (error) {
@@ -746,26 +800,38 @@ class CaptainSocketService {
    * Check if ride should be processed for captain
    */
   shouldProcessRideForCaptain(ride, captainLocation, radius) {
-    // Calculate distance
-    const distance = this.calculateDistance(
-      captainLocation,
-      {
-        latitude: ride.pickupLocation.coordinates[1],
-        longitude: ride.pickupLocation.coordinates[0],
+    try {
+      // Calculate distance with error handling
+      const distance = this.calculateDistance(
+        captainLocation,
+        {
+          latitude: ride.pickupLocation.coordinates[1],
+          longitude: ride.pickupLocation.coordinates[0],
+        }
+      );
+
+      // Validate distance calculation result
+      if (typeof distance !== 'number' || isNaN(distance) || distance < 0) {
+        this.logger.warn(`[Distance] Invalid distance calculation result: ${distance} for ride ${ride._id}`);
+        return false;
       }
-    );
 
-    if (distance > radius) return false;
+      if (distance > radius) return false;
 
-    // Validate fare bounds
-    if (!this.validateFareInBounds(ride.fare.amount)) return false;
+      // Validate fare bounds
+      if (!this.validateFareInBounds(ride.fare.amount)) return false;
 
-    // Check ride age (don't process very old rides)
-    const rideAge = (Date.now() - new Date(ride.createdAt).getTime()) / 1000;
-    const maxAge = this.rideSettings.dispatch.maxDispatchTime || 300;
-    if (rideAge > maxAge) return false;
+      // Check ride age (don't process very old rides)
+      const rideAge = (Date.now() - new Date(ride.createdAt).getTime()) / 1000;
+      const maxAge = this.rideSettings.dispatch.maxDispatchTime || 300;
+      if (rideAge > maxAge) return false;
 
-    return true;
+      return true;
+      
+    } catch (error) {
+      this.logger.error(`[Distance] Error processing ride ${ride._id} for captain:`, error);
+      return false;
+    }
   }
 
   /**
@@ -1593,17 +1659,34 @@ class CaptainSocketService {
   }
 
   /**
-   * Handle socket errors
+   * Handle socket errors with enhanced recovery
    */
   handleSocketError(socket, captainId, error) {
     this.logger.error(`[Socket.IO Captain] Socket error for captain ${captainId}:`, error);
     this.recordError(captainId, error);
     
+    // Update error recovery metrics
+    this.errorRecovery.consecutiveErrors++;
+    this.errorRecovery.lastErrorTime = new Date();
+    
+    // Circuit breaker logic
+    if (this.errorRecovery.consecutiveErrors > this.errorRecovery.maxRetryAttempts) {
+      this.logger.warn(`[Socket.IO Captain] Circuit breaker activated for captain ${captainId} due to consecutive errors`);
+      this.errorRecovery.circuitBreakerOpen = true;
+      
+      // Force disconnect to prevent cascade failures
+      if (socket.connected) {
+        socket.disconnect(true);
+      }
+      return;
+    }
+    
     // Emit error to client if socket is still connected
     if (socket.connected) {
       socket.emit("socketError", { 
         message: "Socket error occurred",
-        timestamp: new Date()
+        timestamp: new Date(),
+        retryIn: 5000 // Suggest retry in 5 seconds
       });
     }
   }
@@ -1686,7 +1769,7 @@ class CaptainSocketService {
   }
 
   /**
-   * Clean up captain session
+   * Clean up captain session with proper timeout management
    */
   cleanupCaptainSession(captainId) {
     if (this.captainSessions.has(captainId)) {
@@ -1694,8 +1777,13 @@ class CaptainSocketService {
       session.status = 'disconnected';
       session.connectionDuration = Date.now() - session.connectedAt.getTime();
       
+      // Clear any existing cleanup timeout
+      if (session.cleanupTimeout) {
+        clearTimeout(session.cleanupTimeout);
+      }
+      
       // Keep session for analytics for 1 hour
-      setTimeout(() => {
+      session.cleanupTimeout = setTimeout(() => {
         this.captainSessions.delete(captainId);
         this.logger.debug(`[Session] Removed session data for captain ${captainId}`);
       }, 3600000);
@@ -1785,6 +1873,18 @@ class CaptainSocketService {
   }
 
   /**
+   * Reset error recovery state when operations are successful
+   */
+  resetErrorRecovery() {
+    if (this.errorRecovery.consecutiveErrors > 0 || this.errorRecovery.circuitBreakerOpen) {
+      this.logger.info('[CaptainSocketService] Resetting error recovery state - operations are healthy');
+      this.errorRecovery.consecutiveErrors = 0;
+      this.errorRecovery.lastErrorTime = null;
+      this.errorRecovery.circuitBreakerOpen = false;
+    }
+  }
+
+  /**
    * Log captain action for analytics
    */
   async logCaptainAction(captainId, rideId, action, metadata = {}) {
@@ -1800,7 +1900,10 @@ class CaptainSocketService {
    * Start performance monitoring
    */
   startPerformanceMonitoring() {
-    setInterval(() => {
+    if (this.intervals.performanceMonitoring) {
+      clearInterval(this.intervals.performanceMonitoring);
+    }
+    this.intervals.performanceMonitoring = setInterval(() => {
       this.updatePerformanceMetrics();
     }, 60000); // Every minute
   }
@@ -1837,7 +1940,10 @@ class CaptainSocketService {
    * Start health monitoring
    */
   startHealthMonitoring() {
-    setInterval(() => {
+    if (this.intervals.healthMonitoring) {
+      clearInterval(this.intervals.healthMonitoring);
+    }
+    this.intervals.healthMonitoring = setInterval(() => {
       this.performHealthCheck();
     }, 300000); // Every 5 minutes
   }
@@ -2574,6 +2680,79 @@ class CaptainSocketService {
       integrity: this.validateServiceIntegrity(),
       timestamp: new Date()
     };
+  }
+
+  /**
+   * Graceful shutdown of the service
+   */
+  async gracefulShutdown() {
+    this.logger.info('[CaptainSocketService] 🔄 Starting graceful shutdown...');
+    
+    try {
+      // Clear intervals
+      if (this.intervals.performanceMonitoring) {
+        clearInterval(this.intervals.performanceMonitoring);
+        this.intervals.performanceMonitoring = null;
+      }
+      
+      if (this.intervals.healthMonitoring) {
+        clearInterval(this.intervals.healthMonitoring);
+        this.intervals.healthMonitoring = null;
+      }
+      
+      // Notify all connected captains
+      if (this.captainNamespace) {
+        this.captainNamespace.emit('serverShutdown', {
+          message: 'Server is shutting down. Please reconnect in a moment.',
+          timestamp: new Date()
+        });
+      }
+      
+      // Clean up sessions with timeouts
+      for (const [captainId, session] of this.captainSessions.entries()) {
+        if (session.cleanupTimeout) {
+          clearTimeout(session.cleanupTimeout);
+        }
+        this.captainSessions.delete(captainId);
+      }
+      
+      // Clear rate limiting map
+      this.rateLimiting.clear();
+      this.suspiciousActivity.clear();
+      
+      this.logger.info('[CaptainSocketService] ✅ Graceful shutdown completed');
+      
+    } catch (error) {
+      this.logger.error('[CaptainSocketService] ❌ Error during graceful shutdown:', error);
+    }
+  }
+
+  /**
+   * Emergency shutdown for critical situations
+   */
+  emergencyShutdown() {
+    this.logger.warn('[CaptainSocketService] 🚨 Emergency shutdown initiated...');
+    
+    try {
+      // Force clear all intervals
+      if (this.intervals.performanceMonitoring) clearInterval(this.intervals.performanceMonitoring);
+      if (this.intervals.healthMonitoring) clearInterval(this.intervals.healthMonitoring);
+      
+      // Force disconnect all captains
+      if (this.captainNamespace) {
+        this.captainNamespace.disconnectSockets(true);
+      }
+      
+      // Force clear all maps
+      this.captainSessions.clear();
+      this.rateLimiting.clear();
+      this.suspiciousActivity.clear();
+      
+      this.logger.warn('[CaptainSocketService] ⚠️ Emergency shutdown completed');
+      
+    } catch (error) {
+      this.logger.error('[CaptainSocketService] ❌ Error during emergency shutdown:', error);
+    }
   }
 }
 

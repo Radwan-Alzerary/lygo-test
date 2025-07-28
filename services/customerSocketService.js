@@ -15,11 +15,41 @@ class CustomerSocketService {
     this.calculateDistance = dependencies.calculateDistance;
     this.customerNamespace = null;
     this.rideSettings = null; // Cache for ride settings
+    
+    // Validate dependencies
+    this.validateDependencies();
+  }
+
+  /**
+   * Validate required dependencies
+   */
+  validateDependencies() {
+    const requiredDependencies = [
+      'onlineCustomers',
+      'onlineCaptains',
+      'dispatchProcesses',
+      'rideSharingMap',
+      'dispatchRide'
+    ];
+    
+    const missingDependencies = requiredDependencies.filter(dep => !this[dep]);
+    
+    if (missingDependencies.length > 0) {
+      throw new Error(`Missing required dependencies: ${missingDependencies.join(', ')}`);
+    }
+    
+    // Warn about optional dependencies
+    const optionalDependencies = ['calculateDistance'];
+    const missingOptional = optionalDependencies.filter(dep => !this[dep]);
+    
+    if (missingOptional.length > 0) {
+      this.logger.warn(`[CustomerSocketService] Missing optional dependencies: ${missingOptional.join(', ')}. Some features may be limited.`);
+    }
   }
 
   async initialize() {
     // Load ride settings
-    console.log('[CustomerSocketService] Initializing ride settings...');
+    this.logger.info('[CustomerSocketService] Initializing ride settings...');
     await this.loadRideSettings();
 
     // Customer Namespace
@@ -33,7 +63,30 @@ class CustomerSocketService {
       this.rideSettings = await RideSetting.findOne({ name: "default" });
       if (!this.rideSettings) {
         // Create default settings if none exist
-        this.rideSettings = new RideSetting({});
+        this.rideSettings = new RideSetting({
+          name: "default",
+          fare: {
+            currency: "IQD",
+            baseFare: 3000,
+            pricePerKm: 500,
+            pricePerMinute: 0,
+            minRidePrice: 2000,
+            maxRidePrice: 7000,
+            nightMultiplier: 1.2,
+            weekendMultiplier: 1.15,
+            surge: {
+              enabled: false,
+              multiplier: 1.5
+            }
+          },
+          passengerRules: {
+            cancellationFee: 1000,
+            freeCancelWindow: 120,
+            minRatingRequired: 0
+          },
+          paymentMethods: ["cash", "wallet"],
+          allowShared: false
+        });
         await this.rideSettings.save();
         this.logger.info('[CustomerSocketService] Created default ride settings.');
       }
@@ -94,7 +147,7 @@ class CustomerSocketService {
 
         // ✅ تحقّق من أن الحساب موجود ومفعّل قبل المتابعة
         try {
-          this.logger.warn(decoded.id)
+          this.logger.debug(`[Socket.IO Customer] Authenticating customer ${decoded.id}`);
           const customer = await Customer.findById(decoded.id).select(
             "isActive isBlocked"
           );
@@ -164,15 +217,19 @@ class CustomerSocketService {
     this.logger.debug(`[State] Online customers: ${JSON.stringify(this.onlineCustomers)}`);
 
     // Send current settings to customer
-    socket.emit("rideSettings", {
-      fare: this.rideSettings.fare,
-      paymentMethods: this.rideSettings.paymentMethods,
-      allowShared: this.rideSettings.allowShared,
-      cancellationPolicy: {
-        fee: this.rideSettings.passengerRules.cancellationFee,
-        freeCancelWindow: this.rideSettings.passengerRules.freeCancelWindow
-      }
-    });
+    try {
+      socket.emit("rideSettings", {
+        fare: this.rideSettings?.fare || {},
+        paymentMethods: this.rideSettings?.paymentMethods || ["cash"],
+        allowShared: this.rideSettings?.allowShared || false,
+        cancellationPolicy: {
+          fee: this.rideSettings?.passengerRules?.cancellationFee || 1000,
+          freeCancelWindow: this.rideSettings?.passengerRules?.freeCancelWindow || 120
+        }
+      });
+    } catch (error) {
+      this.logger.error(`[Socket.IO Customer] Error sending ride settings to customer ${customerId}:`, error);
+    }
 
     // Restore ride state on connection
     await this.restoreRideState(socket, customerId);
@@ -194,10 +251,11 @@ class CustomerSocketService {
       }
 
       // Check minimum rating
-      if (customer.rating < this.rideSettings.passengerRules.minRatingRequired) {
+      const minRatingRequired = this.rideSettings?.passengerRules?.minRatingRequired || 0;
+      if (customer.rating < minRatingRequired) {
         return {
           eligible: false,
-          reason: `Minimum rating required: ${this.rideSettings.passengerRules.minRatingRequired}. Current: ${customer.rating}`
+          reason: `Minimum rating required: ${minRatingRequired}. Current: ${customer.rating}`
         };
       }
 
@@ -208,81 +266,82 @@ class CustomerSocketService {
     }
   }
 
-async restoreRideState(socket, customerId) {
-  try {
-    this.logger.info(`[Socket.IO Customer] Checking for existing rides for customer ${customerId}`);
-    
-    // Only look for truly active rides + very recent completed rides
-    const activeRides = await Ride.find({
-      passenger: customerId,
-      status: { $in: ['requested', 'accepted', 'arrived', 'onRide'] },
-      createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Last 24 hours
-    }).populate('driver', 'name carDetails phoneNumber')
-      .sort({ createdAt: -1 })
-      .limit(1); // Only get the most recent active ride
+  async restoreRideState(socket, customerId) {
+    try {
+      this.logger.info(`[Socket.IO Customer] Checking for existing rides for customer ${customerId}`);
 
-    // Check for very recent completed rides (last 30 minutes) for rating
-    const recentCompleted = await Ride.find({
-      passenger: customerId,
-      status: 'completed',
-      passengerRating:null,
-      updatedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) } // Last 30 minutes
-    }).populate('driver', 'name carDetails phoneNumber')
-      .sort({ updatedAt: -1 })
-      .limit(1);
+      // Only look for truly active rides + very recent completed rides
+      const activeRides = await Ride.find({
+        passenger: customerId,
+        status: { $in: ['requested', 'accepted', 'arrived', 'onRide'] },
+        createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Last 24 hours
+      }).populate('driver', 'name carDetails phoneNumber')
+        .sort({ createdAt: -1 })
+        .limit(1); // Only get the most recent active ride
 
-    let rideToRestore = null;
+      // Check for very recent completed rides (last 30 minutes) for rating
+      const recentCompleted = await Ride.find({
+        passenger: customerId,
+        status: 'completed',
+        passengerRating: null,
+        updatedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) } // Last 30 minutes
+      }).populate('driver', 'name carDetails phoneNumber')
+        .sort({ updatedAt: -1 })
+        .limit(1);
 
-    if (activeRides.length > 0) {
-      rideToRestore = activeRides[0];
-      this.logger.info(`[Socket.IO Customer] Found active ride ${rideToRestore._id} with status ${rideToRestore.status}`);
-    } else if (recentCompleted.length > 0) {
-      rideToRestore = recentCompleted[0];
-      this.logger.info(`[Socket.IO Customer] Found recent completed ride ${rideToRestore._id} for rating`);
-    }
+      let rideToRestore = null;
 
-    if (rideToRestore) {
-      // Prepare comprehensive ride data
-      const rideData = {
-        rideId: rideToRestore._id,
-        status: rideToRestore.status,
-        pickupLocation: rideToRestore.pickupLocation,
-        dropoffLocation: rideToRestore.dropoffLocation,
-        distance: rideToRestore.distance,
-        duration: rideToRestore.duration,
-        fare: rideToRestore.fare,
-        paymentMethod: rideToRestore.paymentMethod,
-        createdAt: rideToRestore.createdAt,
-        updatedAt: rideToRestore.updatedAt
-      };
-
-      // Add driver info if available and ride is not in initial states
-      if (rideToRestore.driver && !['requested', 'notApprove', 'cancelled'].includes(rideToRestore.status)) {
-        rideData.driverInfo = {
-          name: rideToRestore.driver.name,
-          vehicle: rideToRestore.driver.carDetails,
-          phoneNumber: rideToRestore.driver.phoneNumber,
-        };
+      if (activeRides.length > 0) {
+        rideToRestore = activeRides[0];
+        this.logger.info(`[Socket.IO Customer] Found active ride ${rideToRestore._id} with status ${rideToRestore.status}`);
+      } else if (recentCompleted.length > 0) {
+        rideToRestore = recentCompleted[0];
+        this.logger.info(`[Socket.IO Customer] Found recent completed ride ${rideToRestore._id} for rating`);
       }
 
-      // Send comprehensive restoration event
-      this.logger.info(`[Socket.IO Customer] Sending ride restoration data for ride ${rideToRestore._id}`);
-      socket.emit('rideRestored', rideData);
+      if (rideToRestore) {
+        // Prepare comprehensive ride data
+        const rideData = {
+          rideId: rideToRestore._id,
+          status: rideToRestore.status,
+          pickupLocation: rideToRestore.pickupLocation,
+          dropoffLocation: rideToRestore.dropoffLocation,
+          distance: rideToRestore.distance,
+          duration: rideToRestore.duration,
+          fare: rideToRestore.fare,
+          paymentMethod: rideToRestore.paymentMethod,
+          createdAt: rideToRestore.createdAt,
+          updatedAt: rideToRestore.updatedAt
+        };
 
-      // Then send the appropriate status event based on current status
-      this.emitRideStatus(socket, rideToRestore, rideData.driverInfo);
+        // Add driver info if available and ride is not in initial states
+        if (rideToRestore.driver && !['requested', 'notApprove', 'cancelled'].includes(rideToRestore.status)) {
+          rideData.driverInfo = {
+            name: rideToRestore.driver.name,
+            vehicle: rideToRestore.driver.carDetails,
+            phoneNumber: rideToRestore.driver.phoneNumber,
+          };
+        }
 
-    } else {
-      this.logger.info(`[Socket.IO Customer] No active or recent rides found for customer ${customerId}`);
+        // Send comprehensive restoration event
+        this.logger.info(`[Socket.IO Customer] Sending ride restoration data for ride ${rideToRestore._id}`);
+        socket.emit('rideRestored', rideData);
+
+        // Then send the appropriate status event based on current status
+        this.emitRideStatus(socket, rideToRestore, rideData.driverInfo);
+
+      } else {
+        this.logger.info(`[Socket.IO Customer] No active or recent rides found for customer ${customerId}`);
+      }
+
+    } catch (err) {
+      this.logger.error(`[Socket.IO Customer] Error restoring ride state for customer ${customerId}:`, err);
     }
-
-  } catch (err) {
-    this.logger.error(`[Socket.IO Customer] Error restoring ride state for customer ${customerId}:`, err);
   }
-}
 
-emitRideStatus(socket, ride, captainInfo) {
-    const rideId = ride._id;
+  emitRideStatus(socket, ride, captainInfo) {
+    try {
+      const rideId = ride._id;
 
     switch (ride.status) {
       case 'requested':
@@ -327,7 +386,7 @@ emitRideStatus(socket, ride, captainInfo) {
           rideId: ride._id,
           message: "Your ride has been completed. Thank you for riding with us.",
           fare: ride.fare.amount,
-          currency: this.rideSettings.fare.currency
+          currency: this.rideSettings?.fare?.currency || "IQD"
         });
         break;
 
@@ -349,47 +408,73 @@ emitRideStatus(socket, ride, captainInfo) {
       default:
         this.logger.warn(`[Socket.IO Customer] Unknown ride status "${ride.status}" for ride ${rideId}`);
     }
+    } catch (error) {
+      this.logger.error(`[Socket.IO Customer] Error emitting ride status for ride ${ride?._id}:`, error);
+    }
   }
 
   setupEventListeners(socket, customerId) {
-    // Listen for ride requests
-    socket.on("requestRide", async (rideData) => {
-      await this.handleRideRequest(socket, customerId, rideData);
-    });
-
-    // Listen for ride cancellation
-    socket.on("cancelRide", async (data) => {
-      await this.handleRideCancellation(socket, customerId, data);
-    });
-
-    // Listen for fare estimate requests
-    socket.on("requestFareEstimate", async (data) => {
-      await this.handleFareEstimate(socket, customerId, data);
-    });
-
-    // Handle settings refresh request
-    socket.on("refreshSettings", async () => {
-      await this.loadRideSettings();
-      socket.emit("rideSettings", {
-        fare: this.rideSettings.fare,
-        paymentMethods: this.rideSettings.paymentMethods,
-        allowShared: this.rideSettings.allowShared,
-        cancellationPolicy: {
-          fee: this.rideSettings.passengerRules.cancellationFee,
-          freeCancelWindow: this.rideSettings.passengerRules.freeCancelWindow
+    try {
+      // Listen for ride requests
+      socket.on("requestRide", async (rideData) => {
+        try {
+          await this.handleRideRequest(socket, customerId, rideData);
+        } catch (error) {
+          this.logger.error(`[Socket.IO Customer] Error handling ride request for customer ${customerId}:`, error);
+          socket.emit("rideError", { message: "Failed to process ride request." });
         }
       });
-    });
 
-    // Handle disconnect
-    socket.on("disconnect", (reason) => {
-      this.handleDisconnect(socket, customerId, reason);
-    });
+      // Listen for ride cancellation
+      socket.on("cancelRide", async (data) => {
+        try {
+          await this.handleRideCancellation(socket, customerId, data);
+        } catch (error) {
+          this.logger.error(`[Socket.IO Customer] Error handling ride cancellation for customer ${customerId}:`, error);
+          socket.emit("rideError", { message: "Failed to cancel ride." });
+        }
+      });
 
-    // Handle socket errors
-    socket.on('error', (error) => {
-      this.logger.error(`[Socket.IO Customer] Socket error for customer ${customerId} on socket ${socket.id}:`, error);
-    });
+      // Listen for fare estimate requests
+      socket.on("requestFareEstimate", async (data) => {
+        try {
+          await this.handleFareEstimate(socket, customerId, data);
+        } catch (error) {
+          this.logger.error(`[Socket.IO Customer] Error handling fare estimate for customer ${customerId}:`, error);
+          socket.emit("fareEstimateError", { message: "Failed to calculate fare estimate." });
+        }
+      });
+
+      // Handle settings refresh request
+      socket.on("refreshSettings", async () => {
+        try {
+          await this.loadRideSettings();
+          socket.emit("rideSettings", {
+            fare: this.rideSettings?.fare || {},
+            paymentMethods: this.rideSettings?.paymentMethods || ["cash"],
+            allowShared: this.rideSettings?.allowShared || false,
+            cancellationPolicy: {
+              fee: this.rideSettings?.passengerRules?.cancellationFee || 1000,
+              freeCancelWindow: this.rideSettings?.passengerRules?.freeCancelWindow || 120
+            }
+          });
+        } catch (error) {
+          this.logger.error(`[Socket.IO Customer] Error refreshing settings for customer ${customerId}:`, error);
+        }
+      });
+
+      // Handle disconnect
+      socket.on("disconnect", (reason) => {
+        this.handleDisconnect(socket, customerId, reason);
+      });
+
+      // Handle socket errors
+      socket.on('error', (error) => {
+        this.logger.error(`[Socket.IO Customer] Socket error for customer ${customerId} on socket ${socket.id}:`, error);
+      });
+    } catch (error) {
+      this.logger.error(`[Socket.IO Customer] Error setting up event listeners for customer ${customerId}:`, error);
+    }
   }
 
   async handleFareEstimate(socket, customerId, data) {
@@ -405,14 +490,14 @@ emitRideStatus(socket, ride, captainInfo) {
       const estimatedFare = this.calculateFare(data.distance, data.duration || 0);
 
       socket.emit("fareEstimate", {
-        baseFare: this.rideSettings.fare.baseFare,
-        pricePerKm: this.rideSettings.fare.pricePerKm,
+        baseFare: this.rideSettings?.fare?.baseFare || 3000,
+        pricePerKm: this.rideSettings?.fare?.pricePerKm || 500,
         distance: data.distance,
         estimatedFare: estimatedFare,
-        currency: this.rideSettings.fare.currency,
-        surge: this.rideSettings.fare.surge.enabled ? {
+        currency: this.rideSettings?.fare?.currency || "IQD",
+        surge: this.rideSettings?.fare?.surge?.enabled ? {
           active: this.isSurgeActive(),
-          multiplier: this.rideSettings.fare.surge.multiplier
+          multiplier: this.rideSettings?.fare?.surge?.multiplier || 1.5
         } : null
       });
 
@@ -423,13 +508,18 @@ emitRideStatus(socket, ride, captainInfo) {
   }
 
   calculateFare(distanceKm, durationMinutes = 0) {
-    let fare = this.rideSettings.fare.baseFare;
+    if (!this.rideSettings?.fare) {
+      this.logger.warn('[CustomerSocketService] Ride settings not available for fare calculation, using defaults');
+      return 3000; // Default fare
+    }
+
+    let fare = this.rideSettings.fare.baseFare || 3000;
 
     // Add distance cost
-    fare += distanceKm * this.rideSettings.fare.pricePerKm;
+    fare += distanceKm * (this.rideSettings.fare.pricePerKm || 500);
 
     // Add time cost if configured
-    fare += durationMinutes * this.rideSettings.fare.pricePerMinute;
+    fare += durationMinutes * (this.rideSettings.fare.pricePerMinute || 0);
 
     // Apply time-based multipliers
     const now = new Date();
@@ -438,34 +528,34 @@ emitRideStatus(socket, ride, captainInfo) {
 
     // Night multiplier (assuming 10 PM to 6 AM is night)
     if (hour >= 22 || hour < 6) {
-      fare *= this.rideSettings.fare.nightMultiplier;
+      fare *= (this.rideSettings.fare.nightMultiplier || 1.2);
     }
 
     // Weekend multiplier
     if (isWeekend) {
-      fare *= this.rideSettings.fare.weekendMultiplier;
+      fare *= (this.rideSettings.fare.weekendMultiplier || 1.15);
     }
 
     // Apply surge pricing if active
     if (this.isSurgeActive()) {
-      fare *= this.rideSettings.fare.surge.multiplier;
+      fare *= (this.rideSettings.fare.surge?.multiplier || 1.5);
     }
 
     // Ensure fare is within bounds
-    fare = Math.max(this.rideSettings.fare.minRidePrice, fare);
-    fare = Math.min(this.rideSettings.fare.maxRidePrice, fare);
+    fare = Math.max(this.rideSettings.fare.minRidePrice || 2000, fare);
+    fare = Math.min(this.rideSettings.fare.maxRidePrice || 7000, fare);
 
     return Math.round(fare);
   }
 
   isSurgeActive() {
-    if (!this.rideSettings.fare.surge.enabled) {
+    if (!this.rideSettings?.fare?.surge?.enabled) {
       return false;
     }
 
     const now = new Date();
-    const surgeStart = this.rideSettings.fare.surge.activeFrom;
-    const surgeEnd = this.rideSettings.fare.surge.activeTo;
+    const surgeStart = this.rideSettings?.fare?.surge?.activeFrom;
+    const surgeEnd = this.rideSettings?.fare?.surge?.activeTo;
 
     if (surgeStart && surgeEnd) {
       return now >= surgeStart && now <= surgeEnd;
@@ -526,10 +616,11 @@ emitRideStatus(socket, ride, captainInfo) {
     }
 
     // Validate payment method
-    if (rideData.paymentMethod && !this.rideSettings.paymentMethods.includes(rideData.paymentMethod)) {
+    const availablePaymentMethods = this.rideSettings?.paymentMethods || ["cash"];
+    if (rideData.paymentMethod && !availablePaymentMethods.includes(rideData.paymentMethod)) {
       this.logger.warn(`[Socket.IO Customer] Invalid payment method ${rideData.paymentMethod} from customer ${customerId}`);
       socket.emit("rideError", {
-        message: `Payment method not supported. Available: ${this.rideSettings.paymentMethods.join(', ')}`
+        message: `Payment method not supported. Available: ${availablePaymentMethods.join(', ')}`
       });
       return;
     }
@@ -551,7 +642,7 @@ emitRideStatus(socket, ride, captainInfo) {
       const duration = rideData.duration || 0;
       const calculatedFare = rideData.fareAmount || this.calculateFare(distance, duration);
 
-      this.logger.info(`[Socket.IO Customer] Creating new ride for customer ${customerId}. Calculated fare: ${calculatedFare} ${this.rideSettings.fare.currency}`);
+      this.logger.info(`[Socket.IO Customer] Creating new ride for customer ${customerId}. Calculated fare: ${calculatedFare} ${this.rideSettings?.fare?.currency || "IQD"}`);
 
       const newRide = new Ride({
         passenger: customerId,
@@ -568,7 +659,7 @@ emitRideStatus(socket, ride, captainInfo) {
         },
         fare: {
           amount: calculatedFare,
-          currency: this.rideSettings.fare.currency,
+          currency: this.rideSettings?.fare?.currency || "IQD",
         },
         distance: distance,
         duration: duration,
@@ -579,7 +670,7 @@ emitRideStatus(socket, ride, captainInfo) {
       });
 
       await newRide.save();
-      this.logger.info(`[DB] Ride ${newRide._id} created successfully for customer ${customerId}. Status: requested. Fare: ${calculatedFare} ${this.rideSettings.fare.currency}`);
+      this.logger.info(`[DB] Ride ${newRide._id} created successfully for customer ${customerId}. Status: requested. Fare: ${calculatedFare} ${this.rideSettings?.fare?.currency || "IQD"}`);
 
       // Emit confirmation back to customer
       socket.emit('ridePending', {
@@ -589,7 +680,7 @@ emitRideStatus(socket, ride, captainInfo) {
         distance: newRide.distance,
         duration: newRide.duration,
         fare: newRide.fare.amount,
-        currency: this.rideSettings.fare.currency,
+        currency: this.rideSettings?.fare?.currency || "IQD",
         paymentMethod: newRide.paymentMethod,
         message: "Ride requested. Searching for nearby captains..."
       });
@@ -640,10 +731,12 @@ emitRideStatus(socket, ride, captainInfo) {
       const timeDifference = (now - createdAt) / 1000; // seconds
 
       let cancellationFee = 0;
-      if (timeDifference > this.rideSettings.passengerRules.freeCancelWindow) {
-        cancellationFee = this.rideSettings.passengerRules.cancellationFee;
+      const freeCancelWindow = this.rideSettings?.passengerRules?.freeCancelWindow || 120;
+      if (timeDifference > freeCancelWindow) {
+        cancellationFee = this.rideSettings?.passengerRules?.cancellationFee || 1000;
         // Here you would typically deduct from customer's wallet
-        this.logger.info(`[Socket.IO Customer] Cancellation fee of ${cancellationFee} ${this.rideSettings.fare.currency} applied to customer ${customerId} for ride ${rideId}`);
+        const currency = this.rideSettings?.fare?.currency || "IQD";
+        this.logger.info(`[Socket.IO Customer] Cancellation fee of ${cancellationFee} ${currency} applied to customer ${customerId} for ride ${rideId}`);
       }
 
       this.logger.info(`[DB] Updating ride ${rideId} status to 'cancelled' due to customer cancellation. Fee: ${cancellationFee}`);
@@ -674,7 +767,7 @@ emitRideStatus(socket, ride, captainInfo) {
         rideId: ride._id,
         message: "Ride successfully cancelled.",
         cancellationFee: cancellationFee,
-        currency: this.rideSettings.fare.currency
+        currency: this.rideSettings?.fare?.currency || "IQD"
       });
 
     } catch (err) {
@@ -714,8 +807,9 @@ emitRideStatus(socket, ride, captainInfo) {
 
   // Method to validate if fare is within bounds
   validateFareInBounds(fareAmount) {
-    return fareAmount >= this.rideSettings.fare.minRidePrice &&
-      fareAmount <= this.rideSettings.fare.maxRidePrice;
+    const minPrice = this.rideSettings?.fare?.minRidePrice || 2000;
+    const maxPrice = this.rideSettings?.fare?.maxRidePrice || 7000;
+    return fareAmount >= minPrice && fareAmount <= maxPrice;
   }
 }
 

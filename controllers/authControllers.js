@@ -125,11 +125,37 @@ module.exports.login = async (req, res) => {
   try {
     console.log(req.body);
     const user = await User.login(email, password);
+    
+    // إنشاء حساب مالي إذا لم يكن موجوداً
     if (!user.financialAccount) {
-      const newFinancialAccount = new financialAccount();
+      // تحديد نوع الحساب حسب دور المستخدم
+      let accountType = 'admin'; // default
+      if (user.role === 'captain' || user.role === 'driver') {
+        accountType = 'captain';
+      } else if (user.role === 'user') {
+        accountType = 'customer';
+      } else if (user.role === 'admin') {
+        accountType = 'admin';
+      }
+
+      const newFinancialAccount = new financialAccount({
+        user: user._id,
+        accountType: accountType,
+        vault: 0,
+        currency: 'IQD',
+        isActive: true,
+        metadata: {
+          createdBy: 'system',
+          purpose: 'user_account',
+          description: `Financial account for ${user.role} user`
+        }
+      });
+      
       await newFinancialAccount.save();
-      user.financialAccount = newFinancialAccount.id;
+      user.financialAccount = newFinancialAccount._id;
       await user.save();
+      
+      console.log(`✅ تم إنشاء حساب مالي جديد للمستخدم: ${user.email} (${accountType})`);
     }
 
     const token = createToken(user._id);

@@ -53,11 +53,34 @@ async function createDefaultAdmin() {
 
     const savedAdmin = await defaultAdmin.save();
     
+    // إنشاء الحساب المالي للمدير
+    const FinancialAccount = require('./model/financialAccount');
+    
+    const adminFinancialAccount = new FinancialAccount({
+      user: savedAdmin._id,
+      accountType: 'admin',
+      vault: 0,
+      currency: 'IQD',
+      isActive: true,
+      metadata: {
+        createdBy: 'system',
+        purpose: 'admin_account',
+        description: 'Default admin financial account'
+      }
+    });
+    
+    await adminFinancialAccount.save();
+    
+    // ربط الحساب المالي بالمدير
+    savedAdmin.financialAccount = adminFinancialAccount._id;
+    await savedAdmin.save();
+    
     console.log('✅ تم إنشاء المدير الافتراضي بنجاح:');
     console.log(`   المعرف: ${savedAdmin._id}`);
     console.log(`   الاسم: ${savedAdmin.userName}`);
     console.log(`   البريد: ${savedAdmin.email}`);
     console.log(`   الدور: ${savedAdmin.role}`);
+    console.log(`   الحساب المالي: ${adminFinancialAccount._id}`);
     
     console.log('\n🎯 معلومات تسجيل الدخول:');
     console.log('   البريد الإلكتروني: admin@admin.com');

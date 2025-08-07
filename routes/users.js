@@ -143,5 +143,71 @@ router.get("/usercheck", async (req, res) => {
   }
 });
 
+// Create default admin if no users exist
+router.post("/create-default-admin", async (req, res) => {
+  try {
+    // Check if any users exist
+    const userCount = await User.countDocuments();
+    if (userCount > 0) {
+      const existingAdmin = await User.findOne({ email: 'admin@admin.com' });
+      if (existingAdmin) {
+        return res.status(409).json({ 
+          success: false,
+          message: 'Default admin already exists',
+          data: {
+            id: existingAdmin._id,
+            email: existingAdmin.email,
+            userName: existingAdmin.userName,
+            role: existingAdmin.role
+          }
+        });
+      }
+    }
+
+    // Create default admin
+    const defaultAdmin = new User({
+      userName: 'مدير النظام',
+      email: 'admin@admin.com', 
+      password: '11223344', // Will be hashed automatically
+      role: 'admin',
+      totalCommissions: 0,
+      totalSystemEarnings: 0
+    });
+
+    const savedAdmin = await defaultAdmin.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'Default admin created successfully',
+      data: {
+        id: savedAdmin._id,
+        userName: savedAdmin.userName,
+        email: savedAdmin.email,
+        role: savedAdmin.role,
+        loginCredentials: {
+          email: 'admin@admin.com',
+          password: '11223344'
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error creating default admin:', error);
+    
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: 'Admin with this email already exists'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create default admin',
+      error: error.message
+    });
+  }
+});
+
 
 module.exports = router;

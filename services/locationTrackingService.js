@@ -168,7 +168,7 @@ class LocationTrackingService {
       // Store in Redis for persistence (optional)
       if (this.redisClient) {
         const redisKey = `captain_location:${captainId}`;
-        await this.redisClient.setex(redisKey, 300, JSON.stringify(locationUpdate)); // 5 min expiry
+        await this.redisClient.setEx(redisKey, 300, JSON.stringify(locationUpdate)); // 5 min expiry
       }
 
       // Broadcast to all active tracking sessions
@@ -464,11 +464,15 @@ class LocationTrackingService {
       const cutoffTime = Date.now() - (hours * 60 * 60 * 1000);
       
       // Get all history entries
-      const historyData = await this.redisClient.zrangebyscore(
+      const historyData = await this.redisClient.zRangeByScore(
         historyKey, 
         cutoffTime, 
         Date.now(), 
-        'WITHSCORES'
+        { 
+          BY: 'SCORE',
+          REV: false,
+          WITHSCORES: true
+        }
       );
 
       const history = [];

@@ -54,6 +54,9 @@ router.use("/users", require("./users"));
   // Use payment routes - these are mounted under /rides/
   router.use('/rides', paymentRoutes);
   
+  // Use admin tracking routes
+  router.use('/admin', require('./adminTracking'));
+  
   // Main vault API endpoints
   router.get('/vault/stats', authenticateToken, async (req, res) => {
     try {

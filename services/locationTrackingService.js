@@ -364,6 +364,167 @@ class LocationTrackingService {
   getCaptainLocation(captainId) {
     return this.captainLocations.get(captainId) || null;
   }
+
+  /**
+   * Get all current locations for API (enhanced version)
+   * @returns {Array} Enhanced current captain locations with additional data
+   */
+  async getAllCurrentLocations() {
+    try {
+      const locations = Array.from(this.captainLocations.values());
+      const enhancedLocations = [];
+
+      for (const location of locations) {
+        try {
+          // Try to get captain details from database
+          const captain = await Driver.findById(location.captainId).select('name phone email isOnline');
+          
+          enhancedLocations.push({
+            ...location,
+            captainInfo: captain ? {
+              name: captain.name,
+              phone: captain.phone,
+              email: captain.email,
+              isOnline: captain.isOnline
+            } : null,
+            timestamp: location.lastUpdate ? new Date(location.lastUpdate).toISOString() : new Date().toISOString(),
+            status: this.determineCaptainStatus(location, captain)
+          });
+        } catch (error) {
+          // If captain not found in DB, still include the location data
+          enhancedLocations.push({
+            ...location,
+            captainInfo: null,
+            timestamp: location.lastUpdate ? new Date(location.lastUpdate).toISOString() : new Date().toISOString(),
+            status: 'unknown'
+          });
+        }
+      }
+
+      return enhancedLocations;
+    } catch (error) {
+      this.logger.error('[LocationTracking] Error getting all current locations:', error);
+      return Array.from(this.captainLocations.values()); // Return basic data as fallback
+    }
+  }
+
+  /**
+   * Get current location for specific captain (enhanced for API)
+   * @param {string} captainId - Captain ID
+   * @returns {Object|null} Enhanced captain location data
+   */
+  async getCaptainCurrentLocation(captainId) {
+    try {
+      const location = this.captainLocations.get(captainId);
+      if (!location) {
+        return null;
+      }
+
+      // Get captain details from database
+      const captain = await Driver.findById(captainId).select('name phone email isOnline lastLocation');
+      
+      return {
+        ...location,
+        captainInfo: captain ? {
+          name: captain.name,
+          phone: captain.phone,
+          email: captain.email,
+          isOnline: captain.isOnline
+        } : null,
+        timestamp: location.lastUpdate ? new Date(location.lastUpdate).toISOString() : new Date().toISOString(),
+        status: this.determineCaptainStatus(location, captain),
+        accuracy: location.accuracy || null,
+        speed: location.speed || null,
+        heading: location.heading || null
+      };
+    } catch (error) {
+      this.logger.error(`[LocationTracking] Error getting captain ${captainId} location:`, error);
+      const basicLocation = this.captainLocations.get(captainId);
+      return basicLocation ? {
+        ...basicLocation,
+        timestamp: basicLocation.lastUpdate ? new Date(basicLocation.lastUpdate).toISOString() : new Date().toISOString(),
+        status: 'unknown'
+      } : null;
+    }
+  }
+
+  /**
+   * Get captain location history from Redis/database
+   * @param {string} captainId - Captain ID
+   * @param {number} hours - Number of hours to look back (default 24)
+   * @returns {Array} Location history array
+   */
+  async getCaptainLocationHistory(captainId, hours = 24) {
+    try {
+      if (!this.redisClient) {
+        return [];
+      }
+
+      const historyKey = `captain_location_history:${captainId}`;
+      const cutoffTime = Date.now() - (hours * 60 * 60 * 1000);
+      
+      // Get all history entries
+      const historyData = await this.redisClient.zrangebyscore(
+        historyKey, 
+        cutoffTime, 
+        Date.now(), 
+        'WITHSCORES'
+      );
+
+      const history = [];
+      for (let i = 0; i < historyData.length; i += 2) {
+        try {
+          const locationData = JSON.parse(historyData[i]);
+          const timestamp = parseInt(historyData[i + 1]);
+          
+          history.push({
+            ...locationData,
+            timestamp: new Date(timestamp).toISOString(),
+            captainId
+          });
+        } catch (parseError) {
+          this.logger.debug(`[LocationTracking] Error parsing history entry for ${captainId}:`, parseError);
+        }
+      }
+
+      return history.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    } catch (error) {
+      this.logger.error(`[LocationTracking] Error getting location history for ${captainId}:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * Determine captain status based on location data and DB info
+   * @param {Object} location - Location data
+   * @param {Object} captain - Captain DB record
+   * @returns {string} Status (online, offline, unknown)
+   */
+  determineCaptainStatus(location, captain) {
+    // If we have recent location data and captain is online in DB
+    if (captain && captain.isOnline && location && location.lastUpdate) {
+      const timeDiff = Date.now() - location.lastUpdate;
+      // Consider online if location updated within last 5 minutes
+      if (timeDiff <= 300000) {
+        return 'online';
+      }
+    }
+    
+    // If captain is offline in DB or location is old
+    if (captain && !captain.isOnline) {
+      return 'offline';
+    }
+    
+    // If location exists but is old
+    if (location && location.lastUpdate) {
+      const timeDiff = Date.now() - location.lastUpdate;
+      if (timeDiff > 300000) { // More than 5 minutes
+        return 'offline';
+      }
+    }
+    
+    return 'unknown';
+  }
 }
 
 module.exports = LocationTrackingService;

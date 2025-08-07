@@ -1683,8 +1683,15 @@ class CaptainSocketService {
 
         if (paymentResult) {
           // معالجة المبلغ الإضافي - تحويل من محفظة الكابتن للزبون
+          let extraAmountStatus = 'transferred';
           if (receivedAmountNum > expectedAmount) {
-            await this.processExtraAmount(captainId, ride.passenger._id, receivedAmountNum - expectedAmount);
+            const extraAmount = receivedAmountNum - expectedAmount;
+            const transferResult = await this.processExtraAmount(captainId, ride.passenger._id, extraAmount);
+            if (transferResult === 'pending') {
+              extraAmountStatus = 'pending';
+            } else if (!transferResult) {
+              extraAmountStatus = 'failed';
+            }
           }
 
           // تحديث حالة الرحلة لتكون مكتملة
@@ -1707,14 +1714,32 @@ class CaptainSocketService {
             expectedAmount,
             captainEarnings: paymentResult.earnings.captainEarnings,
             commission: paymentResult.earnings.companyCommission,
-            extraAmountTransferred: receivedAmountNum > expectedAmount ? receivedAmountNum - expectedAmount : 0
+            extraAmountTransferred: receivedAmountNum > expectedAmount ? receivedAmountNum - expectedAmount : 0,
+            extraAmountStatus: extraAmountStatus
           });
+
+          // تحديد رسالة المبلغ الإضافي
+          let extraAmountMessage = '';
+          if (receivedAmountNum > expectedAmount) {
+            const extraAmount = receivedAmountNum - expectedAmount;
+            switch (extraAmountStatus) {
+              case 'transferred':
+                extraAmountMessage = ` تم تحويل ${extraAmount} دينار إضافي لحسابك.`;
+                break;
+              case 'pending':
+                extraAmountMessage = ` ${extraAmount} دينار إضافي في انتظار التحويل (رصيد السائق غير كافي).`;
+                break;
+              case 'failed':
+                extraAmountMessage = ` فشل في تحويل ${extraAmount} دينار إضافي.`;
+                break;
+            }
+          }
 
           // إشعار الزبون بإكمال الرحلة والدفع
           if (this.customerSocketService) {
             this.customerSocketService.emitToCustomer(ride.passenger._id, "rideCompleted", {
               rideId: ride._id,
-              message: "تم إكمال الرحلة وتسجيل الدفع بنجاح. شكراً لاستخدام خدمتنا!",
+              message: `تم إكمال الرحلة وتسجيل الدفع بنجاح. شكراً لاستخدام خدمتنا!${extraAmountMessage}`,
               fare: expectedAmount,
               receivedAmount: receivedAmountNum,
               currency: ride.fare.currency,
@@ -1771,12 +1796,43 @@ class CaptainSocketService {
       // التحقق من وجود رصيد كافي في محفظة الكابتن
       if (captain.financialAccount.vault < extraAmount) {
         this.logger.warn(`[Payment] Insufficient funds in captain wallet: ${captain.financialAccount.vault} < ${extraAmount}`);
-        return false;
+        
+        // إنشاء دين للزبون بدلاً من التحويل الفوري
+        const moneyTransfer = new MoneyTransfers({
+          transferType: "dtc", // Driver to Customer
+          status: "pending",
+          from: { id: captain.financialAccount._id, role: "Driver" },
+          to: { id: customer.financialAccount._id, role: "Customer" },
+          vault: extraAmount,
+        });
+
+        await moneyTransfer.save();
+
+        // تسجيل الدين في حساب الكابتن
+        captain.financialAccount.transactions.push({
+          moneyTransfers: [moneyTransfer._id],
+          description: `دين للزبون: ${extraAmount} دينار - رصيد غير كافي`,
+          date: new Date()
+        });
+
+        // تسجيل الائتمان المؤجل في حساب الزبون
+        customer.financialAccount.transactions.push({
+          moneyTransfers: [moneyTransfer._id],
+          description: `ائتمان مؤجل: ${extraAmount} دينار - في انتظار رصيد السائق`,
+          date: new Date()
+        });
+
+        await captain.financialAccount.save();
+        await customer.financialAccount.save();
+
+        this.logger.info(`[Payment] Created pending credit for customer: ${extraAmount} from captain ${captainId} to customer ${customerId}`);
+        return 'pending'; // إشارة للدفع المؤجل
       }
 
       // إنشاء تحويل مالي
       const moneyTransfer = new MoneyTransfers({
         transferType: "dtc", // Driver to Customer
+        status: "completed",
         from: { id: captain.financialAccount._id, role: "Driver" },
         to: { id: customer.financialAccount._id, role: "Customer" },
         vault: extraAmount,

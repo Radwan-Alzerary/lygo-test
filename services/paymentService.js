@@ -450,12 +450,18 @@ class PaymentService {
       const Driver = require('../model/Driver');
 
       // Find admin user (assuming role 'admin')
-      const adminUser = await User.findOne({ role: 'admin' }).populate('financialAccount');
+      let adminUser = await User.findOne({ role: 'admin' }).populate('financialAccount');
       const captain = await Driver.findById(captainId).populate('financialAccount');
 
       if (!adminUser) {
-        this.logger.warn('[PaymentService] Admin user not found for commission transfer');
-        return;
+        this.logger.warn('[PaymentService] Admin user not found, creating default admin for commission transfer');
+        await this.createDefaultAdminUser();
+        // Retry finding admin after creation
+        adminUser = await User.findOne({ role: 'admin' }).populate('financialAccount');
+        if (!adminUser) {
+          this.logger.error('[PaymentService] Failed to create admin user for commission transfer');
+          return;
+        }
       }
 
       if (!adminUser.financialAccount) {
@@ -475,6 +481,7 @@ class PaymentService {
       // Create money transfer record
       const moneyTransfer = new MoneyTransfers({
         transferType: "dtu", // Driver to User (Admin)
+        status: "completed",
         from: { id: captain.financialAccount._id, role: "Driver" },
         to: { id: adminUser.financialAccount._id, role: "Users" },
         vault: commission,
@@ -576,16 +583,48 @@ class PaymentService {
         timestamp: payment.timestamp
       };
 
-      await this.redisClient.setex(cacheKey, 3600, JSON.stringify(cacheData)); // Cache for 1 hour
+      await this.redisClient.setEx(cacheKey, 3600, JSON.stringify(cacheData)); // Cache for 1 hour
       
       // Also cache in captain's payment list
       const captainPaymentsKey = `captain:${payment.captainId}:recent_payments`;
-      await this.redisClient.lpush(captainPaymentsKey, JSON.stringify(cacheData));
-      await this.redisClient.ltrim(captainPaymentsKey, 0, 49); // Keep last 50 payments
+      await this.redisClient.lPush(captainPaymentsKey, JSON.stringify(cacheData));
+      await this.redisClient.lTrim(captainPaymentsKey, 0, 49); // Keep last 50 payments
       await this.redisClient.expire(captainPaymentsKey, 86400); // Expire in 24 hours
 
     } catch (error) {
       this.logger.warn('[PaymentService] Failed to cache payment data:', error);
+    }
+  }
+
+  /**
+   * Create default admin user if doesn't exist
+   */
+  async createDefaultAdminUser() {
+    try {
+      const User = require('../model/user');
+      const FinancialAccount = require('../model/financialAccount');
+      const bcrypt = require('bcrypt');
+
+      // Create financial account first
+      const adminFinancialAccount = new FinancialAccount();
+      await adminFinancialAccount.save();
+
+      // Create admin user
+      const adminUser = new User({
+        email: 'admin@lygo-system.local',
+        password: 'AdminSystem123!', // This will be hashed by the pre-save middleware
+        userName: 'SystemAdmin',
+        role: 'admin',
+        financialAccount: adminFinancialAccount._id,
+        totalCommissions: 0,
+        totalSystemEarnings: 0
+      });
+
+      await adminUser.save();
+      this.logger.info('[PaymentService] Default admin user created successfully');
+      
+    } catch (error) {
+      this.logger.error('[PaymentService] Error creating default admin user:', error);
     }
   }
 }

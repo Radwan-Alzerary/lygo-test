@@ -146,6 +146,7 @@ class RideHailingApp {
     this.app.use((req, res, next) => {
       req.paymentService = this.paymentService;
       req.chatService = this.chatService;
+      req.financialAccountService = this.financialAccountService;
       req.stateManagementService = this.stateManagementService;
       next();
     });
@@ -168,6 +169,11 @@ class RideHailingApp {
     this.paymentService = new PaymentService(this.logger, this.redisClient);
     this.logger.info('[System] Payment service initialized successfully.');
 
+    // Initialize financial account service
+    const FinancialAccountService = require('./services/financialAccountService');
+    this.financialAccountService = new FinancialAccountService(this.logger);
+    this.logger.info('[System] Financial account service initialized successfully.');
+
     // Initialize state management service
     this.stateManagementService = new StateManagementService(this.logger, this.redisClient);
     this.logger.info('[System] State management service initialized successfully.');
@@ -181,6 +187,7 @@ class RideHailingApp {
       calculateDistance,
       chatService: this.chatService, // Add chat service to shared dependencies
       paymentService: this.paymentService, // Add payment service to shared dependencies
+      financialAccountService: this.financialAccountService, // Add financial account service to shared dependencies
       stateManagementService: this.stateManagementService // Add state management service to shared dependencies
     };
 

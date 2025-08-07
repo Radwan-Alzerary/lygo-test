@@ -41,6 +41,10 @@ class CaptainSocketService {
     // Initialize chat service
     this.chatService = new ChatService(logger, dependencies.redisClient);
     
+    // Initialize financial account service
+    const FinancialAccountService = require('./financialAccountService');
+    this.financialAccountService = new FinancialAccountService(logger);
+    
     // 📊 ADVANCED ANALYTICS
     this.connectionMetrics = {
       totalConnections: 0,
@@ -93,6 +97,11 @@ class CaptainSocketService {
     
     // Start monitoring
     this.startPerformanceMonitoring();
+    
+    // Process pending transfers periodically (every 5 minutes)
+    this.processPendingTransfersInterval = setInterval(async () => {
+      await this.processPendingTransfersForAllCaptains();
+    }, 5 * 60 * 1000);
     
     this.logger.info('[CaptainSocketService] Advanced captain service initialized with queue integration');
   }
@@ -1772,103 +1781,71 @@ class CaptainSocketService {
   }
 
   /**
-   * Process extra amount transfer from captain to customer
+   * Process extra amount transfer from captain to customer using Financial Account Service
    */
   async processExtraAmount(captainId, customerId, extraAmount) {
     try {
       const Driver = require('../model/Driver');
       const Customer = require('../model/customer');
-      const FinancialAccount = require('../model/financialAccount');
-      const MoneyTransfers = require('../model/moneyTransfers');
 
-      // الحصول على السائق والزبون مع حساباتهم المالية
+      // Get captain and customer with their financial accounts
       const captain = await Driver.findById(captainId).populate('financialAccount');
       const customer = await Customer.findById(customerId).populate('financialAccount');
 
-      if (!captain || !customer) {
-        throw new Error('Captain or customer not found');
+      if (!captain || !customer || !captain.financialAccount || !customer.financialAccount) {
+        this.logger.error('[Payment] Captain, customer, or their financial accounts not found');
+        return false;
       }
 
-      if (!captain.financialAccount || !customer.financialAccount) {
-        throw new Error('Financial accounts not found');
-      }
-
-      // التحقق من وجود رصيد كافي في محفظة الكابتن
-      if (captain.financialAccount.vault < extraAmount) {
-        this.logger.warn(`[Payment] Insufficient funds in captain wallet: ${captain.financialAccount.vault} < ${extraAmount}`);
-        
-        // إنشاء دين للزبون بدلاً من التحويل الفوري
-        const moneyTransfer = new MoneyTransfers({
-          transferType: "dtc", // Driver to Customer
-          status: "pending",
-          from: { id: captain.financialAccount._id, role: "Driver" },
-          to: { id: customer.financialAccount._id, role: "Customer" },
-          vault: extraAmount,
-        });
-
-        await moneyTransfer.save();
-
-        // تسجيل الدين في حساب الكابتن
-        captain.financialAccount.transactions.push({
-          moneyTransfers: [moneyTransfer._id],
-          description: `دين للزبون: ${extraAmount} دينار - رصيد غير كافي`,
-          date: new Date()
-        });
-
-        // تسجيل الائتمان المؤجل في حساب الزبون
-        customer.financialAccount.transactions.push({
-          moneyTransfers: [moneyTransfer._id],
-          description: `ائتمان مؤجل: ${extraAmount} دينار - في انتظار رصيد السائق`,
-          date: new Date()
-        });
-
-        await captain.financialAccount.save();
-        await customer.financialAccount.save();
-
-        this.logger.info(`[Payment] Created pending credit for customer: ${extraAmount} from captain ${captainId} to customer ${customerId}`);
-        return 'pending'; // إشارة للدفع المؤجل
-      }
-
-      // إنشاء تحويل مالي
-      const moneyTransfer = new MoneyTransfers({
+      // Try to transfer using FinancialAccountService
+      const transferResult = await this.financialAccountService.transferMoney({
+        fromAccountId: captain.financialAccount._id,
+        toAccountId: customer.financialAccount._id,
+        amount: extraAmount,
         transferType: "dtc", // Driver to Customer
-        status: "completed",
-        from: { id: captain.financialAccount._id, role: "Driver" },
-        to: { id: customer.financialAccount._id, role: "Customer" },
-        vault: extraAmount,
+        fromRole: "Driver",
+        toRole: "Customer",
+        description: `مبلغ إضافي من رحلة: ${extraAmount} دينار`,
+        checkBalance: true
       });
 
-      await moneyTransfer.save();
+      if (transferResult.success) {
+        // Update customer wallet balance field to sync with financial account
+        await Customer.findByIdAndUpdate(customerId, {
+          walletBalance: transferResult.toBalance
+        });
 
-      // تحديث المحافظ
-      captain.financialAccount.vault -= extraAmount;
-      customer.financialAccount.vault += extraAmount;
-      
-      // Update customer wallet balance field
-      customer.walletBalance = customer.financialAccount.vault;
+        // Update captain balance field to sync with financial account
+        await Driver.findByIdAndUpdate(captainId, {
+          balance: transferResult.fromBalance
+        });
 
-      // إضافة المعاملات للحسابات
-      const transferDescription = `تحويل مبلغ إضافي: ${extraAmount} دينار`;
-      
-      captain.financialAccount.transactions.push({
-        moneyTransfers: [moneyTransfer._id],
-        description: `${transferDescription} - مرسل للزبون`,
-        date: new Date()
-      });
+        this.logger.info(`[Payment] Extra amount transferred successfully: ${extraAmount} from captain ${captainId} to customer ${customerId}`);
+        return true;
 
-      customer.financialAccount.transactions.push({
-        moneyTransfers: [moneyTransfer._id],
-        description: `${transferDescription} - مستلم من السائق`,
-        date: new Date()
-      });
+      } else if (transferResult.reason === 'insufficient_funds') {
+        // Create pending transfer
+        const pendingResult = await this.financialAccountService.createPendingTransfer({
+          fromAccountId: captain.financialAccount._id,
+          toAccountId: customer.financialAccount._id,
+          amount: extraAmount,
+          transferType: "dtc",
+          fromRole: "Driver", 
+          toRole: "Customer",
+          description: `مبلغ إضافي مؤجل من رحلة: ${extraAmount} دينار`
+        });
 
-      // حفظ التحديثات
-      await captain.financialAccount.save();
-      await customer.financialAccount.save();
-      await customer.save(); // Save customer to update walletBalance
-
-      this.logger.info(`[Payment] Extra amount transferred: ${extraAmount} from captain ${captainId} to customer ${customerId}`);
-      return true;
+        if (pendingResult.success) {
+          this.logger.info(`[Payment] Pending extra amount transfer created: ${extraAmount} from captain ${captainId} to customer ${customerId}`);
+          return 'pending';
+        } else {
+          this.logger.error('[Payment] Failed to create pending transfer:', pendingResult.error);
+          return false;
+        }
+      } else {
+        this.logger.error('[Payment] Transfer failed:', transferResult.error);
+        return false;
+      }
 
     } catch (error) {
       this.logger.error('[Payment] Error processing extra amount transfer:', error);
@@ -3400,108 +3377,108 @@ class CaptainSocketService {
   // ===============================
   // End Chat System Methods
   // ===============================
+
+  // ===========================================================================================
+  // 💰 FINANCIAL ACCOUNT MANAGEMENT
+  // ===========================================================================================
+
+  /**
+   * Process pending transfers for all captains
+   * Called periodically to handle cases where captain balance becomes available
+   */
+  async processPendingTransfersForAllCaptains() {
+    try {
+      this.logger.info('[CaptainSocketService] Processing pending transfers for all captains...');
+      
+      if (!this.financialAccountService) {
+        this.logger.warn('[CaptainSocketService] FinancialAccountService not available');
+        return;
+      }
+
+      // Get all captains with pending transfers
+      const result = await this.financialAccountService.processPendingTransfers();
+      
+      if (result.processedCount > 0) {
+        this.logger.info(`[CaptainSocketService] Processed ${result.processedCount} pending transfers successfully`);
+        
+        // Notify affected captains about balance updates if they're online
+        for (const transfer of result.processedTransfers) {
+          const captainId = transfer.from;
+          const captainSocket = this.getCaptainSocket(captainId);
+          
+          if (captainSocket) {
+            captainSocket.emit('balance_updated', {
+              type: 'pending_transfer_processed',
+              transferId: transfer._id,
+              amount: transfer.amount,
+              description: transfer.description,
+              timestamp: new Date()
+            });
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.error('[CaptainSocketService] Error processing pending transfers:', error);
+    }
+  }
+
+  /**
+   * Get captain socket by ID
+   */
+  getCaptainSocket(captainId) {
+    const socketId = this.onlineCaptains[captainId];
+    if (socketId && this.captainNamespace) {
+      return this.captainNamespace.sockets.get(socketId);
+    }
+    return null;
+  }
+
+  /**
+   * Process pending transfers for a specific captain
+   */
+  async processPendingTransfersForCaptain(captainId) {
+    try {
+      if (!this.financialAccountService) {
+        this.logger.warn('[CaptainSocketService] FinancialAccountService not available');
+        return;
+      }
+
+      const result = await this.financialAccountService.processPendingTransfersForUser(captainId);
+      
+      if (result.processedCount > 0) {
+        this.logger.info(`[CaptainSocketService] Processed ${result.processedCount} pending transfers for captain ${captainId}`);
+        
+        // Notify captain if online
+        const captainSocket = this.getCaptainSocket(captainId);
+        if (captainSocket) {
+          captainSocket.emit('balance_updated', {
+            type: 'pending_transfers_processed',
+            count: result.processedCount,
+            timestamp: new Date()
+          });
+        }
+      }
+    } catch (error) {
+      this.logger.error(`[CaptainSocketService] Error processing pending transfers for captain ${captainId}:`, error);
+    }
+  }
+
+  /**
+   * Cleanup interval on service shutdown
+   */
+  cleanup() {
+    if (this.processPendingTransfersInterval) {
+      clearInterval(this.processPendingTransfersInterval);
+      this.processPendingTransfersInterval = null;
+    }
+    
+    // Cleanup other intervals
+    Object.values(this.intervals).forEach(interval => {
+      if (interval) clearInterval(interval);
+    });
+    
+    this.logger.info('[CaptainSocketService] Cleanup completed');
+  }
 }
 
 module.exports = CaptainSocketService;
-
-/* ═══════════════════════════════════════════════════════════════════════════════
-   🎯 SENIOR-LEVEL CAPTAIN SOCKET SERVICE - COMPLETE IMPLEMENTATION SUMMARY
-   ═══════════════════════════════════════════════════════════════════════════════
-   
-   ✅ ENTERPRISE FEATURES IMPLEMENTED:
-   
-   🚀 SEAMLESS QUEUE INTEGRATION:
-   • Transparent queue management - clients unaware of complexity
-   • Automatic pending ride restoration on reconnection
-   • Intelligent queue processing with priority handling
-   • Zero client-side changes required for queue functionality
-   
-   🔐 ADVANCED SECURITY & AUTH:
-   • JWT token validation with comprehensive error handling
-   • Rate limiting to prevent abuse
-   • Suspicious activity tracking
-   • IP-based connection monitoring
-   • Duplicate connection handling
-   
-   📊 COMPREHENSIVE ANALYTICS:
-   • Real-time performance metrics
-   • Captain response analytics (acceptance rates, response times)
-   • Session tracking with detailed metadata
-   • Error monitoring and circuit breaker pattern
-   • Memory usage and health monitoring
-   
-   🛡️ BULLETPROOF ERROR HANDLING:
-   • Try-catch blocks around all critical operations
-   • Graceful degradation when services unavailable
-   • Automatic error recovery mechanisms
-   • Circuit breaker for cascade failure prevention
-   • Comprehensive logging for debugging
-   
-   🔄 ADVANCED STATE MANAGEMENT:
-   • Intelligent state restoration for reconnecting captains
-   • Ride sharing map for real-time location updates
-   • Session persistence across reconnections
-   • Queue state synchronization with DispatchService
-   
-   📱 COMPLETE RIDE LIFECYCLE:
-   • Ride notifications (seamlessly queued when needed)
-   • Accept/Reject handling with queue processing
-   • Arrival, start, and completion tracking
-   • Cancellation with automatic re-dispatch
-   • Real-time location sharing
-   
-   🎛️ ENTERPRISE ADMINISTRATION:
-   • Force disconnect capabilities
-   • System message broadcasting
-   • Settings update propagation
-   • Maintenance cleanup operations
-   • Graceful and emergency shutdown procedures
-   
-   🚦 PERFORMANCE OPTIMIZATION:
-   • Efficient memory usage with periodic cleanup
-   • Batch operations for multiple captains
-   • Debounced operations to prevent overload
-   • Connection pooling and resource management
-   
-   🔧 MONITORING & MAINTENANCE:
-   • Health check endpoints
-   • Performance metric collection
-   • Service integrity validation
-   • Automated maintenance routines
-   • Complete service summaries for dashboards
-   
-   ✨ QUEUE SYSTEM TRANSPARENCY:
-   • Clients receive notifications exactly as before
-   • No changes required in React Native apps
-   • All queue complexity handled server-side
-   • Seamless experience for captains
-   • Automatic queue processing after responses
-   
-   🎯 PRODUCTION-READY FEATURES:
-   • Comprehensive error recovery
-   • Performance monitoring
-   • Security hardening
-   • Scalable architecture
-   • Memory leak prevention
-   • Graceful degradation
-   • Circuit breaker patterns
-   • Health monitoring
-   • Maintenance automation
-   
-   💡 INTEGRATION NOTES:
-   • Works seamlessly with DispatchService queue system
-   • No React Native client changes required
-   • Transparent operation - captains unaware of queue complexity
-   • Automatic failover when DispatchService unavailable
-   • Complete backward compatibility
-   
-   🏆 ENTERPRISE-GRADE QUALITY:
-   • Senior-level code structure and patterns
-   • Comprehensive documentation and comments
-   • Error handling for every edge case
-   • Performance optimization throughout
-   • Monitoring and analytics built-in
-   • Maintenance and cleanup automation
-   • Security best practices implemented
-   
-   ═══════════════════════════════════════════════════════════════════════════════ */

@@ -30,6 +30,7 @@ class CaptainSocketService {
     this.customerSocketService = dependencies.customerSocketService;
     this.paymentService = dependencies.paymentService; // Add payment service
     this.stateManagementService = dependencies.stateManagementService; // Add state management service
+    this.locationTrackingService = dependencies.locationTrackingService; // Add location tracking service
 
     // Advanced queue integration
     this.dispatchService = dependencies.dispatchService || null;
@@ -1933,8 +1934,8 @@ class CaptainSocketService {
       await this.shareLocationWithCustomer(captainId, data);
 
       // Update location tracking service for admin monitoring
-      if (this.shared.locationTrackingService) {
-        await this.shared.locationTrackingService.updateCaptainLocation(captainId, data);
+      if (this.locationTrackingService) {
+        await this.locationTrackingService.updateCaptainLocation(captainId, data);
       }
 
       // Update captain activity
@@ -2081,8 +2082,8 @@ class CaptainSocketService {
     this.cleanupRideSharing(captainId);
 
     // Remove captain from location tracking
-    if (this.shared.locationTrackingService) {
-      this.shared.locationTrackingService.removeCaptainLocation(captainId);
+    if (this.locationTrackingService) {
+      this.locationTrackingService.removeCaptainLocation(captainId);
     }
 
     // Update session data

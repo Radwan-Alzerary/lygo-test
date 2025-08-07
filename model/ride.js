@@ -53,8 +53,18 @@ const rideSchema = new mongoose.Schema(
     duration: { type: Number, required: true }, // In minutes
     paymentStatus: {
       type: String,
-      enum: ["pending", "paid"],
+      enum: ["pending", "paid", "full", "partial"],
       default: "pending",
+    },
+    paymentDetails: {
+      receivedAmount: { type: Number, default: 0 },
+      expectedAmount: { type: Number },
+      currency: { type: String, default: "IQD" },
+      paymentMethod: { type: String, enum: ["cash", "card", "wallet"], default: "cash" },
+      paymentTimestamp: { type: Date },
+      reason: { type: String }, // For partial payments
+      amountShortage: { type: Number }, // expectedAmount - receivedAmount
+      paymentId: { type: mongoose.Schema.Types.ObjectId, ref: "Payment" }
     },
     passengerRating: {
       type: Number,

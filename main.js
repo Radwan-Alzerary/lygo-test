@@ -22,6 +22,7 @@ const CaptainSocketService = require("./services/captainSocketService");
 const DispatchService = require("./services/dispatchService");
 const SystemService = require("./services/systemService");
 const ChatService = require("./services/chatService"); // Chat service
+const PaymentService = require("./services/paymentService"); // Payment service
 
 // Import API routes
 const createApiRoutes = require("./routes/api");
@@ -72,6 +73,7 @@ class RideHailingApp {
     this.dispatchService = null;
     this.systemService = null;
     this.chatService = null; // Chat service instance
+    this.paymentService = null; // Payment service instance
 
     this.logger.info('[System] RideHailingApp instance created.');
   }
@@ -152,6 +154,10 @@ class RideHailingApp {
     this.chatService = new ChatService(this.logger, this.redisClient);
     this.logger.info('[System] Chat service initialized successfully.');
 
+    // Initialize payment service
+    this.paymentService = new PaymentService(this.logger, this.redisClient);
+    this.logger.info('[System] Payment service initialized successfully.');
+
     const shared = {
       onlineCustomers: this.onlineCustomers,
       onlineCaptains: this.onlineCaptains,
@@ -159,7 +165,8 @@ class RideHailingApp {
       rideSharingMap: this.rideSharingMap,
       redisClient: this.redisClient,
       calculateDistance,
-      chatService: this.chatService // Add chat service to shared dependencies
+      chatService: this.chatService, // Add chat service to shared dependencies
+      paymentService: this.paymentService // Add payment service to shared dependencies
     };
 
     /* 2. أنشئ Dispatcher أولاً */
@@ -193,7 +200,7 @@ class RideHailingApp {
     }
 
     /* 6. API + الخلفية */
-    const apiRouter = createApiRoutes(this.logger, this.dispatchService, this.chatService);
+    const apiRouter = createApiRoutes(this.logger, this.dispatchService, this.chatService, this.paymentService);
     this.app.use("/api", apiRouter);
 
     // Initialize DispatchService after all socket services are ready
@@ -253,6 +260,10 @@ class RideHailingApp {
     const chatEnabled = this.chatService ? 'ENABLED' : 'DISABLED';
     this.logger.info(`- Chat System: ${chatEnabled}`);
     
+    // Payment system status
+    const paymentEnabled = this.paymentService ? 'ENABLED' : 'DISABLED';
+    this.logger.info(`- Payment System: ${paymentEnabled}`);
+    
     if (this.chatService) {
       this.logger.info('  ✅ Chat features available:');
       this.logger.info('    - Real-time messaging');
@@ -261,6 +272,16 @@ class RideHailingApp {
       this.logger.info('    - Message read receipts');
       this.logger.info('    - Chat history & Redis caching');
       this.logger.info('    - Rate limiting (30 msg/min)');
+    }
+
+    if (this.paymentService) {
+      this.logger.info('  ✅ Payment features available:');
+      this.logger.info('    - POST /api/rides/payment/ (Captain payment submission)');
+      this.logger.info('    - GET /api/rides/payments/history (Payment history)');
+      this.logger.info('    - GET /api/rides/payments/stats (Payment statistics)');
+      this.logger.info('    - Automatic commission calculation');
+      this.logger.info('    - Captain earnings tracking');
+      this.logger.info('    - Payment dispute handling');
     }
   }
 }

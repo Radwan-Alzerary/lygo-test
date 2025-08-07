@@ -38,6 +38,7 @@ const rideSchema = new mongoose.Schema(
         "accepted",
         "arrived",
         "onRide",
+        "awaiting_payment",
         "completed",
         "canceled",
         "cancelled",
@@ -53,7 +54,7 @@ const rideSchema = new mongoose.Schema(
     duration: { type: Number, required: true }, // In minutes
     paymentStatus: {
       type: String,
-      enum: ["pending", "paid", "full", "partial"],
+      enum: ["pending", "paid", "full", "partial", "waived"],
       default: "pending",
     },
     paymentDetails: {

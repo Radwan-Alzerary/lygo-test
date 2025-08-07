@@ -19,6 +19,12 @@ const customerSchema = new mongoose.Schema(
     },
 
     token: { type: String }, // For storing JWT or other auth tokens
+    
+    // Financial fields for better tracking
+    walletBalance: { type: Number, default: 0 }, // Current wallet balance
+    totalSpent: { type: Number, default: 0 }, // Total amount spent on rides
+    totalRides: { type: Number, default: 0 }, // Total completed rides
+    
     financialAccount: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "FinancialAccount",

@@ -146,6 +146,99 @@ const createApiRoutes = (logger, dispatchService, chatService, paymentService, s
   // router.get('/rides/:id', async (req, res) => { ... });
   // router.post('/rides/:id/cancel', async (req, res) => { ... });
 
+  // Get pending rides (awaiting payment)
+  router.get('/rides/pending-payment', authenticateToken, async (req, res) => {
+    try {
+      const { userType, userId } = req.user;
+      
+      let query = { status: 'awaiting_payment' };
+      
+      // Filter by user type
+      if (userType === 'captain' || userType === 'driver') {
+        query.driver = userId;
+      } else if (userType === 'customer') {
+        query.passenger = userId;
+      } else {
+        // Admin can see all pending payments
+      }
+
+      const pendingRides = await Ride.find(query)
+        .populate('passenger', 'name phoneNumber')
+        .populate('driver', 'name phoneNumber')
+        .sort({ rideEndTime: -1 })
+        .lean();
+
+      logger.info(`[API] Retrieved ${pendingRides.length} pending payment rides for ${userType} ${userId}`);
+
+      res.json({
+        success: true,
+        message: 'تم استرجاع الرحل المعلقة بنجاح',
+        data: {
+          pendingRides,
+          count: pendingRides.length
+        }
+      });
+
+    } catch (error) {
+      logger.error('[API] Error getting pending payment rides:', error);
+      res.status(500).json({
+        success: false,
+        message: 'خطأ في استرجاع الرحل المعلقة',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  });
+
+  // Mark ride as completed without payment (admin only)
+  router.post('/rides/:rideId/force-complete', authenticateToken, async (req, res) => {
+    try {
+      const { rideId } = req.params;
+      const { userType } = req.user;
+      const { reason } = req.body;
+
+      // Check if user is admin
+      if (userType !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'صلاحيات الإدارة مطلوبة لهذه العملية'
+        });
+      }
+
+      const ride = await Ride.findOneAndUpdate(
+        { _id: rideId, status: 'awaiting_payment' },
+        {
+          status: 'completed',
+          paymentStatus: 'waived',
+          'paymentDetails.reason': reason || 'تم إكمال الرحلة بواسطة الإدارة بدون دفع'
+        },
+        { new: true }
+      );
+
+      if (!ride) {
+        return res.status(404).json({
+          success: false,
+          message: 'الرحلة غير موجودة أو ليست في انتظار الدفع'
+        });
+      }
+
+      logger.info(`[API] Admin force-completed ride ${rideId} without payment`);
+
+      res.json({
+        success: true,
+        message: 'تم إكمال الرحلة بنجاح',
+        data: { rideId: ride._id, status: ride.status }
+      });
+
+    } catch (error) {
+      logger.error('[API] Error force-completing ride:', error);
+      res.status(500).json({
+        success: false,
+        message: 'خطأ في إكمال الرحلة',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  });
+
   return router;
 };
 

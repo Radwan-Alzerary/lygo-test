@@ -28,6 +28,8 @@ class CaptainSocketService {
     this.calculateDistance = dependencies.calculateDistance;
     this.dispatchRide = dependencies.dispatchRide;
     this.customerSocketService = dependencies.customerSocketService;
+    this.paymentService = dependencies.paymentService; // Add payment service
+    this.stateManagementService = dependencies.stateManagementService; // Add state management service
 
     // Advanced queue integration
     this.dispatchService = dependencies.dispatchService || null;
@@ -38,9 +40,6 @@ class CaptainSocketService {
     
     // Initialize chat service
     this.chatService = new ChatService(logger, dependencies.redisClient);
-    
-    // Initialize state management service  
-    this.stateManagementService = dependencies.stateManagementService || new StateManagementService(logger, dependencies.redisClient);
     
     // 📊 ADVANCED ANALYTICS
     this.connectionMetrics = {
@@ -968,6 +967,15 @@ class CaptainSocketService {
     });
 
     // ===============================
+    // Payment System Events - Captain
+    // ===============================
+
+    // Submit payment amount received from customer
+    socket.on("submitPayment", async (data) => {
+      await this.handlePaymentSubmission(socket, captainId, data);
+    });
+
+    // ===============================
     // Chat System Events - Captain
     // ===============================
 
@@ -1554,7 +1562,7 @@ class CaptainSocketService {
         { _id: rideId, driver: captainId, status: "onRide" },
         {
           $set: {
-            status: "completed",
+            status: "awaiting_payment", // تغيير الحالة لانتظار الدفع
             rideEndTime: new Date(),
             isDispatching: false
           }
@@ -1574,30 +1582,34 @@ class CaptainSocketService {
         // Clean up location sharing
         this.cleanupRideSharing(captainId);
 
-        // Notify customer
+        // إرسال طلب الدفع للكابتن بدلاً من إنهاء الرحلة مباشرة
+        socket.emit("paymentRequired", {
+          rideId: ride._id,
+          status: "awaiting_payment",
+          message: "الرحلة اكتملت. يرجى إدخال المبلغ المستلم من الزبون",
+          expectedAmount: ride.fare.amount,
+          currency: this.rideSettings.fare.currency,
+          duration: Math.round(actualDuration / (1000 * 60)),
+          passenger: {
+            name: ride.passenger?.name || 'الزبون',
+            phoneNumber: ride.passenger?.phoneNumber
+          }
+        });
+
+        // Notify customer that ride ended but payment pending
         if (this.customerSocketService) {
-          this.customerSocketService.emitToCustomer(ride.passenger, "rideCompleted", {
+          this.customerSocketService.emitToCustomer(ride.passenger, "rideAwaitingPayment", {
             rideId: ride._id,
-            message: "Your ride has been completed. Thank you for riding with us!",
+            message: "الرحلة اكتملت وفي انتظار تأكيد الدفع من السائق",
             fare: ride.fare.amount,
             currency: this.rideSettings.fare.currency,
             duration: Math.round(actualDuration / (1000 * 60))
           });
         }
 
-        // Confirm to captain
-        socket.emit("rideStatusUpdate", {
-          rideId: ride._id,
-          status: "completed",
-          message: "Ride successfully completed",
-          fare: ride.fare.amount,
-          currency: this.rideSettings.fare.currency,
-          duration: Math.round(actualDuration / (1000 * 60))
-        });
-
         // Update session
-        this.updateCaptainActivity(captainId, 'ride_completed', { rideId, duration: actualDuration });
-        await this.logCaptainAction(captainId, rideId, 'completed');
+        this.updateCaptainActivity(captainId, 'ride_ended', { rideId, duration: actualDuration });
+        await this.logCaptainAction(captainId, rideId, 'ride_ended_awaiting_payment');
 
       } else {
         const currentRide = await Ride.findById(rideId).select('status').lean();
@@ -1610,6 +1622,201 @@ class CaptainSocketService {
       this.logger.error(`[Socket.IO Captain] Error ending ride for captain ${captainId}:`, err);
       this.sendError(socket, "Failed to end ride", rideId);
       this.recordError(captainId, err);
+    }
+  }
+
+  /**
+   * Handle payment submission from captain
+   */
+  async handlePaymentSubmission(socket, captainId, data) {
+    const { rideId, receivedAmount, notes } = data;
+    
+    if (!rideId || receivedAmount === undefined || receivedAmount === null) {
+      this.sendError(socket, "معرف الرحلة والمبلغ المستلم مطلوبان", rideId);
+      return;
+    }
+
+    this.logger.info(`[Socket.IO Captain] 💰 Captain ${captainId} submitting payment for ride ${rideId}: ${receivedAmount}`);
+
+    try {
+      // التحقق من الرحلة والحصول على تفاصيلها
+      const ride = await Ride.findOne({
+        _id: rideId, 
+        driver: captainId, 
+        status: "awaiting_payment"
+      }).populate('passenger');
+
+      if (!ride) {
+        this.sendError(socket, "الرحلة غير موجودة أو ليست في حالة انتظار الدفع", rideId);
+        return;
+      }
+
+      const expectedAmount = ride.fare.amount;
+      const receivedAmountNum = parseFloat(receivedAmount);
+      
+      // التحقق من صحة المبلغ
+      if (receivedAmountNum < 0) {
+        this.sendError(socket, "المبلغ المستلم لا يمكن أن يكون أقل من صفر", rideId);
+        return;
+      }
+
+      // تحديد حالة الدفع
+      let paymentStatus = 'full';
+      if (receivedAmountNum < expectedAmount) {
+        paymentStatus = 'partial';
+      }
+
+      // معالجة الدفع من خلال PaymentService
+      if (this.paymentService) {
+        const paymentResult = await this.paymentService.processPayment({
+          rideId,
+          captainId,
+          receivedAmount: receivedAmountNum,
+          expectedAmount,
+          currency: ride.fare.currency || 'IQD',
+          paymentStatus,
+          paymentMethod: 'cash',
+          reason: paymentStatus === 'partial' ? `مبلغ ناقص: ${expectedAmount - receivedAmountNum}` : null,
+          timestamp: new Date(),
+          notes
+        });
+
+        if (paymentResult) {
+          // معالجة المبلغ الإضافي - تحويل من محفظة الكابتن للزبون
+          if (receivedAmountNum > expectedAmount) {
+            await this.processExtraAmount(captainId, ride.passenger._id, receivedAmountNum - expectedAmount);
+          }
+
+          // تحديث حالة الرحلة لتكون مكتملة
+          await Ride.findByIdAndUpdate(rideId, {
+            status: "completed",
+            paymentStatus: paymentStatus,
+            'paymentDetails.receivedAmount': receivedAmountNum,
+            'paymentDetails.expectedAmount': expectedAmount,
+            'paymentDetails.paymentTimestamp': new Date(),
+            'paymentDetails.paymentId': paymentResult.payment._id
+          });
+
+          // إشعار الكابتن بنجاح الدفع
+          socket.emit("paymentProcessed", {
+            rideId,
+            status: "completed",
+            message: "تم تسجيل الدفع بنجاح وإكمال الرحلة",
+            paymentId: paymentResult.payment._id,
+            receivedAmount: receivedAmountNum,
+            expectedAmount,
+            captainEarnings: paymentResult.earnings.captainEarnings,
+            commission: paymentResult.earnings.companyCommission,
+            extraAmountTransferred: receivedAmountNum > expectedAmount ? receivedAmountNum - expectedAmount : 0
+          });
+
+          // إشعار الزبون بإكمال الرحلة والدفع
+          if (this.customerSocketService) {
+            this.customerSocketService.emitToCustomer(ride.passenger._id, "rideCompleted", {
+              rideId: ride._id,
+              message: "تم إكمال الرحلة وتسجيل الدفع بنجاح. شكراً لاستخدام خدمتنا!",
+              fare: expectedAmount,
+              receivedAmount: receivedAmountNum,
+              currency: ride.fare.currency,
+              refundAmount: receivedAmountNum > expectedAmount ? receivedAmountNum - expectedAmount : 0
+            });
+          }
+
+          this.logger.info(`[Socket.IO Captain] ✅ Payment processed successfully for ride ${rideId}: ${receivedAmountNum}/${expectedAmount}`);
+          
+          // Update session and log
+          this.updateCaptainActivity(captainId, 'payment_submitted', { 
+            rideId, 
+            amount: receivedAmountNum,
+            earnings: paymentResult.earnings.captainEarnings 
+          });
+          await this.logCaptainAction(captainId, rideId, 'payment_completed');
+
+        } else {
+          this.sendError(socket, "فشل في معالجة الدفع", rideId);
+        }
+      } else {
+        this.sendError(socket, "خدمة الدفع غير متوفرة", rideId);
+      }
+
+    } catch (err) {
+      this.logger.error(`[Socket.IO Captain] Error processing payment for captain ${captainId}:`, err);
+      this.sendError(socket, "خطأ في معالجة الدفع", rideId);
+      this.recordError(captainId, err);
+    }
+  }
+
+  /**
+   * Process extra amount transfer from captain to customer
+   */
+  async processExtraAmount(captainId, customerId, extraAmount) {
+    try {
+      const Driver = require('../model/Driver');
+      const Customer = require('../model/customer');
+      const FinancialAccount = require('../model/financialAccount');
+      const MoneyTransfers = require('../model/moneyTransfers');
+
+      // الحصول على السائق والزبون مع حساباتهم المالية
+      const captain = await Driver.findById(captainId).populate('financialAccount');
+      const customer = await Customer.findById(customerId).populate('financialAccount');
+
+      if (!captain || !customer) {
+        throw new Error('Captain or customer not found');
+      }
+
+      if (!captain.financialAccount || !customer.financialAccount) {
+        throw new Error('Financial accounts not found');
+      }
+
+      // التحقق من وجود رصيد كافي في محفظة الكابتن
+      if (captain.financialAccount.vault < extraAmount) {
+        this.logger.warn(`[Payment] Insufficient funds in captain wallet: ${captain.financialAccount.vault} < ${extraAmount}`);
+        return false;
+      }
+
+      // إنشاء تحويل مالي
+      const moneyTransfer = new MoneyTransfers({
+        transferType: "dtc", // Driver to Customer
+        from: { id: captain.financialAccount._id, role: "Driver" },
+        to: { id: customer.financialAccount._id, role: "Customer" },
+        vault: extraAmount,
+      });
+
+      await moneyTransfer.save();
+
+      // تحديث المحافظ
+      captain.financialAccount.vault -= extraAmount;
+      customer.financialAccount.vault += extraAmount;
+      
+      // Update customer wallet balance field
+      customer.walletBalance = customer.financialAccount.vault;
+
+      // إضافة المعاملات للحسابات
+      const transferDescription = `تحويل مبلغ إضافي: ${extraAmount} دينار`;
+      
+      captain.financialAccount.transactions.push({
+        moneyTransfers: [moneyTransfer._id],
+        description: `${transferDescription} - مرسل للزبون`,
+        date: new Date()
+      });
+
+      customer.financialAccount.transactions.push({
+        moneyTransfers: [moneyTransfer._id],
+        description: `${transferDescription} - مستلم من السائق`,
+        date: new Date()
+      });
+
+      // حفظ التحديثات
+      await captain.financialAccount.save();
+      await customer.financialAccount.save();
+      await customer.save(); // Save customer to update walletBalance
+
+      this.logger.info(`[Payment] Extra amount transferred: ${extraAmount} from captain ${captainId} to customer ${customerId}`);
+      return true;
+
+    } catch (error) {
+      this.logger.error('[Payment] Error processing extra amount transfer:', error);
+      return false;
     }
   }
 

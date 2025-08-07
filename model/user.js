@@ -15,15 +15,23 @@ const userSchema = new mongoose.Schema({
   role: {
     type: String,
     default: "user",
+    enum: ["user", "admin", "driver", "captain", "moderator"]
   },
   userName: {
     type: String,
     required: [true, "UserName is Required"],
   },
+  
+  // Financial fields for admin accounts
+  totalCommissions: { type: Number, default: 0 }, // Total commissions received
+  totalSystemEarnings: { type: Number, default: 0 }, // Total system earnings
+  
   financialAccount: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "FinancialAccount",
   },
+}, {
+  timestamps: true
 });
 
 userSchema.pre("save", async function (next) {

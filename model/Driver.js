@@ -32,6 +32,14 @@ const driverSchema = new mongoose.Schema({
   address: { type: String },
   rideHistory: [{ type: mongoose.Schema.Types.ObjectId, ref: "Ride" }],
   isAvailable: { type: Boolean, default: true },
+  
+  // Financial fields
+  balance: { type: Number, default: 0 }, // Current wallet balance
+  totalEarnings: { type: Number, default: 0 }, // Total earnings from rides
+  totalRides: { type: Number, default: 0 }, // Total completed rides
+  rating: { type: Number, default: 5, min: 1, max: 5 }, // Driver rating
+  lastPaymentDate: { type: Date }, // Last payment received date
+  
   financialAccount: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "FinancialAccount",

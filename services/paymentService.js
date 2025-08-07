@@ -89,6 +89,12 @@ class PaymentService {
       // Update captain earnings
       await this.updateCaptainEarnings(captainId, savedPayment.captainEarnings);
 
+      // Update customer spending stats
+      await this.updateCustomerSpendingStats(ride.passenger, savedPayment.receivedAmount);
+
+      // Transfer commission to admin
+      await this.transferCommissionToAdmin(savedPayment.companyCommission, rideId, captainId);
+
       // Cache payment data if Redis is available
       if (this.redisClient) {
         await this.cachePaymentData(savedPayment);
@@ -423,6 +429,128 @@ class PaymentService {
       this.logger.debug(`[PaymentService] Updated captain ${captainId} earnings by ${earnings}`);
     } catch (error) {
       this.logger.error('[PaymentService] Error updating captain earnings:', error);
+      // Don't throw here - payment is already processed
+    }
+  }
+
+  /**
+   * Transfer commission to admin account
+   * @param {number} commission - Commission amount
+   * @param {string} rideId - Ride ID for reference
+   * @param {string} captainId - Captain ID for reference
+   */
+  async transferCommissionToAdmin(commission, rideId, captainId) {
+    try {
+      if (commission <= 0) return;
+
+      const User = require('../model/user');
+      const FinancialAccount = require('../model/financialAccount');
+      const MoneyTransfers = require('../model/moneyTransfers');
+      const Driver = require('../model/Driver');
+
+      // Find admin user (assuming role 'admin')
+      const adminUser = await User.findOne({ role: 'admin' }).populate('financialAccount');
+      const captain = await Driver.findById(captainId).populate('financialAccount');
+
+      if (!adminUser) {
+        this.logger.warn('[PaymentService] Admin user not found for commission transfer');
+        return;
+      }
+
+      if (!adminUser.financialAccount) {
+        // Create financial account for admin if doesn't exist
+        const newFinancialAccount = new FinancialAccount();
+        await newFinancialAccount.save();
+        adminUser.financialAccount = newFinancialAccount._id;
+        await adminUser.save();
+        await adminUser.populate('financialAccount');
+      }
+
+      if (!captain || !captain.financialAccount) {
+        this.logger.warn('[PaymentService] Captain or captain financial account not found');
+        return;
+      }
+
+      // Create money transfer record
+      const moneyTransfer = new MoneyTransfers({
+        transferType: "dtu", // Driver to User (Admin)
+        from: { id: captain.financialAccount._id, role: "Driver" },
+        to: { id: adminUser.financialAccount._id, role: "Users" },
+        vault: commission,
+      });
+
+      await moneyTransfer.save();
+
+      // Update admin vault (commission goes to admin)
+      adminUser.financialAccount.vault += commission;
+      
+      // Add transaction record to admin account
+      adminUser.financialAccount.transactions.push({
+        moneyTransfers: [moneyTransfer._id],
+        description: `عمولة من رحلة: ${rideId} - السائق: ${captainId}`,
+        date: new Date()
+      });
+
+      // Note: Captain's financial account will be updated separately in captain earnings method
+      // We don't deduct from captain here as it's already handled in payment processing
+
+      await adminUser.financialAccount.save();
+
+      // Update admin system earnings stats
+      await this.updateAdminSystemEarnings(commission);
+
+      this.logger.info(`[PaymentService] Commission ${commission} transferred to admin from ride ${rideId}`);
+      
+    } catch (error) {
+      this.logger.error('[PaymentService] Error transferring commission to admin:', error);
+      // Don't throw here - payment is already processed
+    }
+  }
+
+  /**
+   * Update customer spending statistics
+   * @param {string} customerId - Customer ID
+   * @param {number} amount - Amount spent
+   */
+  async updateCustomerSpendingStats(customerId, amount) {
+    try {
+      const Customer = require('../model/customer');
+      
+      await Customer.findByIdAndUpdate(customerId, {
+        $inc: {
+          totalSpent: amount,
+          totalRides: 1
+        }
+      });
+
+      this.logger.debug(`[PaymentService] Updated customer ${customerId} spending stats: +${amount}`);
+    } catch (error) {
+      this.logger.error('[PaymentService] Error updating customer spending stats:', error);
+      // Don't throw here - payment is already processed
+    }
+  }
+
+  /**
+   * Update admin system earnings
+   * @param {number} commission - Commission amount to add
+   */
+  async updateAdminSystemEarnings(commission) {
+    try {
+      const User = require('../model/user');
+      
+      await User.findOneAndUpdate(
+        { role: 'admin' },
+        {
+          $inc: {
+            totalCommissions: commission,
+            totalSystemEarnings: commission
+          }
+        }
+      );
+
+      this.logger.debug(`[PaymentService] Updated admin system earnings: +${commission}`);
+    } catch (error) {
+      this.logger.error('[PaymentService] Error updating admin system earnings:', error);
       // Don't throw here - payment is already processed
     }
   }

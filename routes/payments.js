@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const PaymentService = require('../services/paymentService');
-const jwt = require('jsonwebtoken');
+const authenticateToken = require('../middlewares/authenticateToken'); // استخدام middleware الأساسي
 
 /**
  * Payment Routes for Ride Hailing App
@@ -21,48 +21,78 @@ const injectPaymentService = (req, res, next) => {
   next();
 };
 
-// Authentication middleware
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
-
-  if (!token) {
-    return res.status(401).json({
-      success: false,
-      message: 'Access token is required'
-    });
-  }
-
-  jwt.verify(token, process.env.JWT_SECRET || "kishan sheth super secret key", (err, user) => {
-    if (err) {
-      return res.status(403).json({
+// Middleware to verify captain role using main models
+const verifyCaptain = async (req, res, next) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({
         success: false,
-        message: 'Invalid or expired token'
+        message: 'Authentication required'
       });
     }
-    req.user = user;
-    next();
-  });
-};
 
-// Middleware to verify captain role
-const verifyCaptain = (req, res, next) => {
-  if (!req.user) {
-    return res.status(401).json({
-      success: false,
-      message: 'Authentication required'
-    });
-  }
+    const Driver = require('../model/Driver');
+    const User = require('../model/user');
 
-  // Check if user is a captain/driver
-  if (req.user.userType !== 'driver' && req.user.role !== 'captain' && req.user.role !== 'driver') {
+    // التحقق من أن المستخدم سائق في model Driver
+    const driver = await Driver.findById(req.user.id);
+    if (driver) {
+      req.captain = driver; // إضافة معلومات السائق للطلب
+      return next();
+    }
+
+    // التحقق من أن المستخدم له دور سائق في model User
+    const user = await User.findById(req.user.id);
+    if (user && (user.role === 'driver' || user.role === 'captain')) {
+      req.captain = user;
+      return next();
+    }
+
+    // إذا لم يتم العثور على السائق
     return res.status(403).json({
       success: false,
       message: 'Access denied. Captain privileges required'
     });
-  }
 
-  next();
+  } catch (error) {
+    console.error('[Auth] Error verifying captain role:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error during authentication'
+    });
+  }
+};
+
+// Middleware to verify admin role using main models
+const verifyAdmin = async (req, res, next) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    const User = require('../model/user');
+    const user = await User.findById(req.user.id);
+    
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin privileges required'
+      });
+    }
+
+    req.adminUser = user;
+    next();
+
+  } catch (error) {
+    console.error('[Auth] Error verifying admin role:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error during authentication'
+    });
+  }
 };
 
 /**
@@ -276,16 +306,8 @@ router.get('/payments/stats', injectPaymentService, authenticateToken, verifyCap
  * @query {string} endDate - End date for analytics
  * @query {string} groupBy - Group by: day, week, month
  */
-router.get('/payments/analytics', injectPaymentService, authenticateToken, async (req, res) => {
+router.get('/payments/analytics', injectPaymentService, authenticateToken, verifyAdmin, async (req, res) => {
   try {
-    // Check admin privileges
-    if (req.user.role !== 'admin' && req.user.userType !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Admin privileges required'
-      });
-    }
-
     const filters = {
       startDate: req.query.startDate,
       endDate: req.query.endDate,
@@ -323,16 +345,8 @@ router.get('/payments/analytics', injectPaymentService, authenticateToken, async
  * @desc Mark a payment as processed (Admin only)
  * @access Private (Admin only)
  */
-router.put('/payments/:paymentId/process', injectPaymentService, authenticateToken, async (req, res) => {
+router.put('/payments/:paymentId/process', injectPaymentService, authenticateToken, verifyAdmin, async (req, res) => {
   try {
-    // Check admin privileges
-    if (req.user.role !== 'admin' && req.user.userType !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Admin privileges required'
-      });
-    }
-
     const { paymentId } = req.params;
     const Payment = require('../model/payment');
     

@@ -294,8 +294,12 @@ class RideHailingApp {
       this.logger.info('    - POST /api/rides/payment/ (Captain payment submission)');
       this.logger.info('    - GET /api/rides/payments/history (Payment history)');
       this.logger.info('    - GET /api/rides/payments/stats (Payment statistics)');
-      this.logger.info('    - Automatic commission calculation');
+      this.logger.info('    - Socket: submitPayment (New captain payment flow)');
+      this.logger.info('    - Ride state: awaiting_payment supported');
+      this.logger.info('    - Automatic commission calculation (15%)');
       this.logger.info('    - Captain earnings tracking');
+      this.logger.info('    - Extra amount transfer (Captain -> Customer)');
+      this.logger.info('    - Commission transfer (Captain -> Admin)');
       this.logger.info('    - Payment dispute handling');
     }
 

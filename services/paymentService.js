@@ -367,8 +367,9 @@ class PaymentService {
       throw new Error('Access denied. This ride does not belong to you');
     }
 
-    if (ride.status !== 'completed') {
-      throw new Error('Payment can only be processed for completed rides');
+    // Allow payment processing for rides that are awaiting payment or already completed
+    if (!['completed', 'awaiting_payment'].includes(ride.status)) {
+      throw new Error('Payment can only be processed for completed rides or rides awaiting payment');
     }
 
     return ride;

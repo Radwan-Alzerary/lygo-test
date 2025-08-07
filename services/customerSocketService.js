@@ -2,6 +2,7 @@ const jwt = require("jsonwebtoken");
 const Ride = require("../model/ride");
 const Customer = require("../model/customer"); // Assuming you have a Customer model
 const RideSetting = require("../model/rideSetting"); // Add RideSetting import
+const ChatService = require("./chatService"); // Chat service for messaging
 
 class CustomerSocketService {
   constructor(io, logger, dependencies) {
@@ -15,6 +16,9 @@ class CustomerSocketService {
     this.calculateDistance = dependencies.calculateDistance;
     this.customerNamespace = null;
     this.rideSettings = null; // Cache for ride settings
+    
+    // Initialize chat service
+    this.chatService = new ChatService(logger, dependencies.redisClient);
     
     // Validate dependencies
     this.validateDependencies();
@@ -463,6 +467,63 @@ class CustomerSocketService {
         }
       });
 
+      // ===============================
+      // Chat System Events - Customer
+      // ===============================
+
+      // Send chat message
+      socket.on("sendChatMessage", async (data, callback) => {
+        try {
+          await this.handleSendChatMessage(socket, customerId, data, callback);
+        } catch (error) {
+          this.logger.error(`[Socket.IO Customer] Error handling send chat message for customer ${customerId}:`, error);
+          if (callback) callback({ success: false, message: "Failed to send message" });
+        }
+      });
+
+      // Get chat history
+      socket.on("getChatHistory", async (data, callback) => {
+        try {
+          await this.handleGetChatHistory(socket, customerId, data, callback);
+        } catch (error) {
+          this.logger.error(`[Socket.IO Customer] Error getting chat history for customer ${customerId}:`, error);
+          if (callback) callback({ success: false, message: "Failed to get chat history" });
+        }
+      });
+
+      // Mark messages as read
+      socket.on("markMessagesAsRead", async (data) => {
+        try {
+          await this.handleMarkMessagesAsRead(socket, customerId, data);
+        } catch (error) {
+          this.logger.error(`[Socket.IO Customer] Error marking messages as read for customer ${customerId}:`, error);
+        }
+      });
+
+      // Typing indicator
+      socket.on("typingIndicator", async (data) => {
+        try {
+          await this.handleTypingIndicator(socket, customerId, data);
+        } catch (error) {
+          this.logger.error(`[Socket.IO Customer] Error handling typing indicator for customer ${customerId}:`, error);
+        }
+      });
+
+      // Get quick messages
+      socket.on("getQuickMessages", (callback) => {
+        try {
+          const quickMessages = this.chatService.getQuickMessages('customer');
+          if (callback) callback({ success: true, messages: quickMessages });
+        } catch (error) {
+          this.logger.error(`[Socket.IO Customer] Error getting quick messages for customer ${customerId}:`, error);
+          if (callback) callback({ success: false, message: "Failed to get quick messages" });
+        }
+      });
+
+      // ===============================
+      // End Chat System Events
+      // ===============================
+
       // Handle disconnect
       socket.on("disconnect", (reason) => {
         this.handleDisconnect(socket, customerId, reason);
@@ -811,6 +872,243 @@ class CustomerSocketService {
     const maxPrice = this.rideSettings?.fare?.maxRidePrice || 7000;
     return fareAmount >= minPrice && fareAmount <= maxPrice;
   }
+
+  // ===============================
+  // Chat System Handler Methods
+  // ===============================
+
+  /**
+   * Handle sending chat message
+   * @param {Object} socket - Socket instance
+   * @param {string} customerId - Customer ID
+   * @param {Object} data - Message data
+   * @param {Function} callback - Response callback
+   */
+  async handleSendChatMessage(socket, customerId, data, callback) {
+    try {
+      const { rideId, text, tempId, isQuick = false, quickMessageType = null } = data;
+
+      // Validate required fields
+      if (!rideId || !text) {
+        if (callback) callback({ 
+          success: false, 
+          message: "Missing required fields: rideId and text are required" 
+        });
+        return;
+      }
+
+      // Send message through chat service
+      const message = await this.chatService.sendMessage({
+        rideId,
+        senderId: customerId,
+        senderType: 'customer',
+        text,
+        tempId,
+        isQuick,
+        quickMessageType
+      });
+
+      // Get ride details to find driver
+      const ride = await Ride.findById(rideId).select('driverId');
+      
+      // Notify driver if online
+      if (ride && ride.driverId) {
+        const driverSocketId = this.onlineCaptains[ride.driverId.toString()];
+        if (driverSocketId) {
+          this.io.to(driverSocketId).emit('chatMessage', {
+            messageId: message._id,
+            rideId: message.rideId,
+            text: message.text,
+            senderId: message.senderId,
+            senderType: message.senderType,
+            isQuick: message.isQuick,
+            timestamp: message.createdAt,
+            tempId: message.tempId,
+            messageStatus: message.messageStatus
+          });
+
+          this.logger.debug(`[Chat] Message sent from customer ${customerId} to driver ${ride.driverId} for ride ${rideId}`);
+        }
+      }
+
+      // Send response back to customer
+      if (callback) {
+        callback({
+          success: true,
+          message: {
+            messageId: message._id,
+            rideId: message.rideId,
+            text: message.text,
+            senderId: message.senderId,
+            senderType: message.senderType,
+            isQuick: message.isQuick,
+            timestamp: message.createdAt,
+            tempId: message.tempId,
+            messageStatus: message.messageStatus
+          }
+        });
+      }
+
+    } catch (error) {
+      this.logger.error(`[Chat] Error sending message from customer ${customerId}:`, error);
+      if (callback) {
+        callback({
+          success: false,
+          message: error.message || "Failed to send message"
+        });
+      }
+    }
+  }
+
+  /**
+   * Handle getting chat history
+   * @param {Object} socket - Socket instance
+   * @param {string} customerId - Customer ID
+   * @param {Object} data - Request data
+   * @param {Function} callback - Response callback
+   */
+  async handleGetChatHistory(socket, customerId, data, callback) {
+    try {
+      const { rideId, limit = 50, skip = 0 } = data;
+
+      if (!rideId) {
+        if (callback) callback({ 
+          success: false, 
+          message: "rideId is required" 
+        });
+        return;
+      }
+
+      // Verify customer is part of this ride
+      const ride = await Ride.findById(rideId).select('customerId');
+      if (!ride || ride.customerId.toString() !== customerId) {
+        if (callback) callback({ 
+          success: false, 
+          message: "Unauthorized access to chat history" 
+        });
+        return;
+      }
+
+      // Get chat history
+      const messages = await this.chatService.getChatHistory(rideId, limit, skip);
+      const unreadCount = await this.chatService.getUnreadCount(rideId, 'customer');
+
+      if (callback) {
+        callback({
+          success: true,
+          messages: messages,
+          unreadCount: unreadCount
+        });
+      }
+
+    } catch (error) {
+      this.logger.error(`[Chat] Error getting chat history for customer ${customerId}:`, error);
+      if (callback) {
+        callback({
+          success: false,
+          message: error.message || "Failed to get chat history"
+        });
+      }
+    }
+  }
+
+  /**
+   * Handle marking messages as read
+   * @param {Object} socket - Socket instance
+   * @param {string} customerId - Customer ID
+   * @param {Object} data - Request data
+   */
+  async handleMarkMessagesAsRead(socket, customerId, data) {
+    try {
+      const { rideId, messageIds } = data;
+
+      if (!rideId || !messageIds || !Array.isArray(messageIds)) {
+        this.logger.warn(`[Chat] Invalid data for marking messages as read from customer ${customerId}`);
+        return;
+      }
+
+      // Verify customer is part of this ride
+      const ride = await Ride.findById(rideId).select('customerId driverId');
+      if (!ride || ride.customerId.toString() !== customerId) {
+        this.logger.warn(`[Chat] Unauthorized attempt to mark messages as read by customer ${customerId} for ride ${rideId}`);
+        return;
+      }
+
+      // Mark messages as read
+      const result = await this.chatService.markMessagesAsRead(rideId, messageIds, 'customer');
+
+      // Notify driver if online
+      if (ride.driverId) {
+        const driverSocketId = this.onlineCaptains[ride.driverId.toString()];
+        if (driverSocketId) {
+          this.io.to(driverSocketId).emit('messageRead', {
+            rideId: rideId,
+            messageIds: messageIds,
+            readBy: 'customer',
+            readAt: new Date()
+          });
+        }
+      }
+
+      this.logger.debug(`[Chat] Customer ${customerId} marked ${result.modifiedCount} messages as read for ride ${rideId}`);
+
+    } catch (error) {
+      this.logger.error(`[Chat] Error marking messages as read for customer ${customerId}:`, error);
+    }
+  }
+
+  /**
+   * Handle typing indicator
+   * @param {Object} socket - Socket instance
+   * @param {string} customerId - Customer ID
+   * @param {Object} data - Typing data
+   */
+  async handleTypingIndicator(socket, customerId, data) {
+    try {
+      const { rideId, isTyping } = data;
+
+      if (!rideId || typeof isTyping !== 'boolean') {
+        this.logger.warn(`[Chat] Invalid typing indicator data from customer ${customerId}`);
+        return;
+      }
+
+      // Verify customer is part of this ride
+      const ride = await Ride.findById(rideId).select('customerId driverId');
+      if (!ride || ride.customerId.toString() !== customerId) {
+        this.logger.warn(`[Chat] Unauthorized typing indicator from customer ${customerId} for ride ${rideId}`);
+        return;
+      }
+
+      // Update typing indicator
+      await this.chatService.updateTypingIndicator({
+        rideId,
+        userId: customerId,
+        userType: 'customer',
+        isTyping
+      });
+
+      // Notify driver if online
+      if (ride.driverId) {
+        const driverSocketId = this.onlineCaptains[ride.driverId.toString()];
+        if (driverSocketId) {
+          this.io.to(driverSocketId).emit('typingIndicator', {
+            rideId: rideId,
+            senderType: 'customer',
+            isTyping: isTyping
+          });
+        }
+      }
+
+      this.logger.debug(`[Chat] Customer ${customerId} ${isTyping ? 'started' : 'stopped'} typing for ride ${rideId}`);
+
+    } catch (error) {
+      this.logger.error(`[Chat] Error handling typing indicator for customer ${customerId}:`, error);
+    }
+  }
+
+  // ===============================
+  // End Chat System Methods
+  // ===============================
 }
 
 module.exports = CustomerSocketService;

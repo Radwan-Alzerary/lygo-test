@@ -1,9 +1,49 @@
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const Ride = require("../model/ride");
+const chatRoutes = require("./chat"); // Chat routes
 
-const createApiRoutes = (logger, dispatchService) => {
+const createApiRoutes = (logger, dispatchService, chatService) => {
   const router = express.Router();
+
+  // Middleware to inject services into request object
+  router.use((req, res, next) => {
+    req.chatService = chatService;
+    req.dispatchService = dispatchService;
+    req.logger = logger;
+    next();
+  });
+
+  // Simple authentication middleware for API routes
+  const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
+
+    if (!token) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Authorization token is missing or invalid.' 
+      });
+    }
+
+    jwt.verify(token, process.env.JWT_SECRET || "kishan sheth super secret key", (err, decoded) => {
+      if (err) {
+        return res.status(401).json({ 
+          success: false, 
+          message: 'Invalid or expired token.' 
+        });
+      }
+      
+      req.user = {
+        userId: decoded.id,
+        userType: decoded.userType || 'customer' // default to customer if not specified
+      };
+      next();
+    });
+  };
+
+  // Use chat routes with authentication
+  router.use('/chat', authenticateToken, chatRoutes);
 
   router.post('/requestRide', async (req, res) => {
     logger.info(`[API] Received POST /api/requestRide`);

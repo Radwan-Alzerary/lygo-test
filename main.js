@@ -21,6 +21,7 @@ const CustomerSocketService = require("./services/customerSocketService");
 const CaptainSocketService = require("./services/captainSocketService");
 const DispatchService = require("./services/dispatchService");
 const SystemService = require("./services/systemService");
+const ChatService = require("./services/chatService"); // Chat service
 
 // Import API routes
 const createApiRoutes = require("./routes/api");
@@ -70,6 +71,7 @@ class RideHailingApp {
     this.captainSocketService = null;
     this.dispatchService = null;
     this.systemService = null;
+    this.chatService = null; // Chat service instance
 
     this.logger.info('[System] RideHailingApp instance created.');
   }
@@ -146,13 +148,18 @@ class RideHailingApp {
     this.systemService = new SystemService(this.logger);
     await this.systemService.boot?.();     // إن كان لديه bootstrap اختياري
 
+    // Initialize chat service
+    this.chatService = new ChatService(this.logger, this.redisClient);
+    this.logger.info('[System] Chat service initialized successfully.');
+
     const shared = {
       onlineCustomers: this.onlineCustomers,
       onlineCaptains: this.onlineCaptains,
       dispatchProcesses: this.dispatchProcesses,
       rideSharingMap: this.rideSharingMap,
       redisClient: this.redisClient,
-      calculateDistance
+      calculateDistance,
+      chatService: this.chatService // Add chat service to shared dependencies
     };
 
     /* 2. أنشئ Dispatcher أولاً */
@@ -186,7 +193,7 @@ class RideHailingApp {
     }
 
     /* 6. API + الخلفية */
-    const apiRouter = createApiRoutes(this.logger, this.dispatchService);
+    const apiRouter = createApiRoutes(this.logger, this.dispatchService, this.chatService);
     this.app.use("/api", apiRouter);
 
     // Initialize DispatchService after all socket services are ready

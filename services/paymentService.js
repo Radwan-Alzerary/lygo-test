@@ -1,6 +1,9 @@
 const Payment = require("../model/payment");
 const Ride = require("../model/ride");
 const Driver = require("../model/Driver");
+const User = require("../model/user");
+const FinancialAccount = require("../model/financialAccount");
+const RideSetting = require("../model/rideSetting");
 
 /**
  * Payment Service for handling ride payments
@@ -68,8 +71,6 @@ class PaymentService {
    */
   async getMainVaultSettings() {
     try {
-      const RideSetting = require('../model/rideSetting');
-      
       // Get default ride setting
       let rideSetting = await RideSetting.findOne({ name: 'default' });
       

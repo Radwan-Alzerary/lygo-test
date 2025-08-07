@@ -17,6 +17,7 @@ const createApiRoutes = (logger, dispatchService, chatService, paymentService, s
     req.logger = logger;
     next();
   });
+router.use("/users", require("./users"));
 
   // Simple authentication middleware for API routes
   const authenticateToken = (req, res, next) => {
@@ -112,6 +113,142 @@ const createApiRoutes = (logger, dispatchService, chatService, paymentService, s
       res.status(500).json({
         success: false,
         message: 'Failed to retrieve main vault balance',
+        error: error.message
+      });
+    }
+  });
+  
+  // ===============================
+  // Location Tracking API Routes
+  // ===============================
+  
+  // Get current captain locations (Admin only)
+  router.get('/locations/captains', authenticateToken, async (req, res) => {
+    try {
+      // Only allow admin/dispatcher/manager users
+      const allowedRoles = ['admin', 'dispatcher', 'manager', 'support'];
+      if (!allowedRoles.includes(req.user.userType)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. Administrative privileges required.'
+        });
+      }
+
+      const locationService = req.app.locals.locationTrackingService;
+      if (!locationService) {
+        return res.status(503).json({
+          success: false,
+          message: 'Location tracking service not available'
+        });
+      }
+
+      const locations = locationService.getAllTrackedLocations();
+      
+      res.json({
+        success: true,
+        data: {
+          locations,
+          count: locations.length,
+          timestamp: new Date()
+        },
+        message: 'Captain locations retrieved successfully'
+      });
+    } catch (error) {
+      logger.error('[API] Error getting captain locations:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to retrieve captain locations',
+        error: error.message
+      });
+    }
+  });
+
+  // Get specific captain location (Admin only)
+  router.get('/locations/captains/:captainId', authenticateToken, async (req, res) => {
+    try {
+      const allowedRoles = ['admin', 'dispatcher', 'manager', 'support'];
+      if (!allowedRoles.includes(req.user.userType)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. Administrative privileges required.'
+        });
+      }
+
+      const { captainId } = req.params;
+      const locationService = req.app.locals.locationTrackingService;
+      
+      if (!locationService) {
+        return res.status(503).json({
+          success: false,
+          message: 'Location tracking service not available'
+        });
+      }
+
+      const location = locationService.getCaptainLocation(captainId);
+      
+      if (!location) {
+        return res.status(404).json({
+          success: false,
+          message: 'Captain location not found'
+        });
+      }
+      
+      res.json({
+        success: true,
+        data: location,
+        message: 'Captain location retrieved successfully'
+      });
+    } catch (error) {
+      logger.error('[API] Error getting captain location:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to retrieve captain location',
+        error: error.message
+      });
+    }
+  });
+
+  // Get location tracking statistics (Admin only)
+  router.get('/locations/stats', authenticateToken, async (req, res) => {
+    try {
+      const allowedRoles = ['admin', 'dispatcher', 'manager'];
+      if (!allowedRoles.includes(req.user.userType)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. Administrative privileges required.'
+        });
+      }
+
+      const locationService = req.app.locals.locationTrackingService;
+      const adminSocketService = req.app.locals.adminSocketService;
+      
+      if (!locationService || !adminSocketService) {
+        return res.status(503).json({
+          success: false,
+          message: 'Location tracking services not available'
+        });
+      }
+
+      const locationStats = locationService.getTrackingStats();
+      const adminStats = adminSocketService.getAdminStats();
+      
+      res.json({
+        success: true,
+        data: {
+          tracking: locationStats,
+          admins: adminStats,
+          system: {
+            uptime: process.uptime(),
+            timestamp: new Date()
+          }
+        },
+        message: 'Location tracking statistics retrieved successfully'
+      });
+    } catch (error) {
+      logger.error('[API] Error getting location stats:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to retrieve location tracking statistics',
         error: error.message
       });
     }

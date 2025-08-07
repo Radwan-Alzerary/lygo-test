@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لوحة مراقبة مواقع الكباتن</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(45deg, #1e3c72, #2a5298);
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 2.5rem;
+        }
+
+        .stats-panel {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #2a5298;
+            margin: 10px 0;
+        }
+
+        .control-panel {
+            padding: 20px;
+            border-bottom: 2px solid #eee;
+        }
+
+        .control-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: #28a745;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #218838;
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c82333;
+        }
+
+        .btn-info {
+            background: #17a2b8;
+            color: white;
+        }
+
+        .btn-info:hover {
+            background: #138496;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-left: 10px;
+        }
+
+        .status-connected {
+            background: #28a745;
+        }
+
+        .status-disconnected {
+            background: #dc3545;
+        }
+
+        .captains-list {
+            padding: 20px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .captain-item {
+            background: white;
+            margin: 10px 0;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            border-right: 4px solid #2a5298;
+        }
+
+        .captain-online {
+            border-right-color: #28a745;
+        }
+
+        .captain-offline {
+            border-right-color: #6c757d;
+        }
+
+        .captain-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .captain-name {
+            font-weight: bold;
+            color: #2a5298;
+        }
+
+        .captain-location {
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+
+        .log-panel {
+            background: #343a40;
+            color: white;
+            padding: 15px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+        }
+
+        .log-entry {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 3px;
+        }
+
+        .log-info {
+            background: rgba(23, 162, 184, 0.2);
+        }
+
+        .log-success {
+            background: rgba(40, 167, 69, 0.2);
+        }
+
+        .log-error {
+            background: rgba(220, 53, 69, 0.2);
+        }
+
+        .map-container {
+            height: 400px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            margin: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🗺️ لوحة مراقبة مواقع الكباتن</h1>
+            <p>نظام تتبع المواقع في الوقت الفعلي</p>
+            <span id="connectionStatus" class="status-indicator status-disconnected"></span>
+            <span id="connectionText">غير متصل</span>
+        </div>
+
+        <div class="stats-panel">
+            <div class="stat-card">
+                <h3>🚗 الكباتن المتتبعين</h3>
+                <div class="stat-value" id="trackedCaptains">0</div>
+                <small>كابتن نشط</small>
+            </div>
+            <div class="stat-card">
+                <h3>👨‍💼 المشرفين المتصلين</h3>
+                <div class="stat-value" id="connectedAdmins">0</div>
+                <small>مشرف يراقب</small>
+            </div>
+            <div class="stat-card">
+                <h3>📡 جلسات التتبع</h3>
+                <div class="stat-value" id="trackingSessions">0</div>
+                <small>جلسة نشطة</small>
+            </div>
+            <div class="stat-card">
+                <h3>⏱️ وقت التشغيل</h3>
+                <div class="stat-value" id="systemUptime">00:00:00</div>
+                <small>ساعة:دقيقة:ثانية</small>
+            </div>
+        </div>
+
+        <div class="control-panel">
+            <div class="control-buttons">
+                <button class="btn-primary" onclick="startTracking()">🎯 بدء التتبع</button>
+                <button class="btn-danger" onclick="stopTracking()">⏹️ إيقاف التتبع</button>
+                <button class="btn-info" onclick="refreshData()">🔄 تحديث البيانات</button>
+                <button class="btn-info" onclick="getStats()">📊 الإحصائيات</button>
+            </div>
+        </div>
+
+        <div class="map-container">
+            <div>
+                <h3>🗺️ خريطة المواقع</h3>
+                <p>سيتم عرض مواقع الكباتن هنا على الخريطة</p>
+                <small>(يتطلب تكامل مع Google Maps أو OpenStreetMap)</small>
+            </div>
+        </div>
+
+        <div class="captains-list">
+            <h3>📋 قائمة الكباتن</h3>
+            <div id="captainsList">
+                <p style="text-align: center; color: #6c757d;">لا يوجد كباتن متتبعين حالياً</p>
+            </div>
+        </div>
+
+        <div class="log-panel" id="logPanel">
+            <div class="log-entry log-info">
+                <span>[INFO]</span> تم تحميل لوحة مراقبة المواقع
+            </div>
+        </div>
+    </div>
+
+    <!-- Socket.IO Client -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        let socket = null;
+        let isTracking = false;
+        let captains = new Map();
+
+        // Initialize the application
+        async function init() {
+            logMessage('بدء تهيئة النظام...', 'info');
+            
+            // Get admin token (in real app, this would come from login)
+            const token = getAdminToken();
+            if (!token) {
+                logMessage('خطأ: لم يتم العثور على رمز المصادقة', 'error');
+                return;
+            }
+
+            // Connect to admin socket namespace
+            connectToAdminSocket(token);
+            
+            // Load initial data
+            await loadInitialData();
+        }
+
+        // Get admin token (mock - in real app this comes from authentication)
+        function getAdminToken() {
+            // This should be replaced with actual authentication
+            return localStorage.getItem('adminToken') || 'demo_admin_token';
+        }
+
+        // Connect to admin socket namespace
+        function connectToAdminSocket(token) {
+            socket = io('/admin', {
+                auth: { token: token },
+                transports: ['websocket']
+            });
+
+            socket.on('connect', () => {
+                logMessage('✅ تم الاتصال بنظام المراقبة', 'success');
+                updateConnectionStatus(true);
+            });
+
+            socket.on('disconnect', () => {
+                logMessage('❌ انقطع الاتصال مع النظام', 'error');
+                updateConnectionStatus(false);
+                isTracking = false;
+            });
+
+            socket.on('admin_connected', (data) => {
+                logMessage(`مرحباً ${data.userInfo.name} (${data.userInfo.role})`, 'success');
+                updateStats(data.stats);
+            });
+
+            socket.on('tracking_response', (data) => {
+                if (data.success) {
+                    logMessage(data.message, 'success');
+                    isTracking = data.sessionId ? true : false;
+                } else {
+                    logMessage(data.message, 'error');
+                }
+            });
+
+            socket.on('captain_locations_initial', (data) => {
+                logMessage(`تم استلام ${data.count} موقع كابتن`, 'info');
+                updateCaptainsList(data.data);
+            });
+
+            socket.on('captain_location_update', (data) => {
+                if (data.type === 'location_update') {
+                    updateCaptainLocation(data.data);
+                } else if (data.type === 'location_removed') {
+                    removeCaptain(data.captainId);
+                }
+            });
+
+            socket.on('tracking_stats', (data) => {
+                updateStats(data.locationStats, data.adminStats);
+            });
+
+            socket.on('error', (error) => {
+                logMessage(`خطأ: ${error.message}`, 'error');
+            });
+        }
+
+        // Start location tracking
+        async function startTracking() {
+            if (!socket) {
+                logMessage('خطأ: لا يوجد اتصال بالنظام', 'error');
+                return;
+            }
+
+            if (isTracking) {
+                logMessage('التتبع نشط بالفعل', 'info');
+                return;
+            }
+
+            logMessage('بدء تتبع مواقع الكباتن...', 'info');
+            socket.emit('start_location_tracking');
+        }
+
+        // Stop location tracking
+        async function stopTracking() {
+            if (!socket) {
+                logMessage('خطأ: لا يوجد اتصال بالنظام', 'error');
+                return;
+            }
+
+            if (!isTracking) {
+                logMessage('التتبع متوقف بالفعل', 'info');
+                return;
+            }
+
+            logMessage('إيقاف تتبع المواقع...', 'info');
+            socket.emit('stop_location_tracking');
+        }
+
+        // Refresh data from API
+        async function refreshData() {
+            logMessage('تحديث البيانات...', 'info');
+            await loadCurrentLocations();
+        }
+
+        // Get statistics
+        async function getStats() {
+            if (!socket) {
+                logMessage('خطأ: لا يوجد اتصال بالنظام', 'error');
+                return;
+            }
+
+            socket.emit('get_tracking_stats');
+        }
+
+        // Load initial data from API
+        async function loadInitialData() {
+            try {
+                const token = getAdminToken();
+                const response = await fetch('/api/locations/stats', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    updateStats(data.data.tracking, data.data.admins);
+                }
+            } catch (error) {
+                logMessage(`خطأ في تحميل البيانات: ${error.message}`, 'error');
+            }
+        }
+
+        // Load current locations from API
+        async function loadCurrentLocations() {
+            try {
+                const token = getAdminToken();
+                const response = await fetch('/api/locations/captains', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    updateCaptainsList(data.data.locations);
+                    logMessage(`تم تحديث ${data.data.count} موقع كابتن`, 'success');
+                }
+            } catch (error) {
+                logMessage(`خطأ في تحميل المواقع: ${error.message}`, 'error');
+            }
+        }
+
+        // Update connection status
+        function updateConnectionStatus(connected) {
+            const statusElement = document.getElementById('connectionStatus');
+            const textElement = document.getElementById('connectionText');
+            
+            if (connected) {
+                statusElement.className = 'status-indicator status-connected';
+                textElement.textContent = 'متصل';
+            } else {
+                statusElement.className = 'status-indicator status-disconnected';
+                textElement.textContent = 'غير متصل';
+            }
+        }
+
+        // Update statistics display
+        function updateStats(locationStats, adminStats) {
+            if (locationStats) {
+                document.getElementById('trackedCaptains').textContent = locationStats.trackedCaptains || 0;
+                document.getElementById('trackingSessions').textContent = locationStats.activeSessions || 0;
+            }
+
+            if (adminStats) {
+                document.getElementById('connectedAdmins').textContent = adminStats.totalConnected || 0;
+            }
+        }
+
+        // Update captains list
+        function updateCaptainsList(locations) {
+            const container = document.getElementById('captainsList');
+            
+            if (!locations || locations.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #6c757d;">لا يوجد كباتن متتبعين حالياً</p>';
+                return;
+            }
+
+            let html = '';
+            locations.forEach(captain => {
+                captains.set(captain.captainId, captain);
+                html += createCaptainHTML(captain);
+            });
+
+            container.innerHTML = html;
+            
+            // Update tracked captains count
+            document.getElementById('trackedCaptains').textContent = locations.length;
+        }
+
+        // Update single captain location
+        function updateCaptainLocation(captain) {
+            captains.set(captain.captainId, captain);
+            
+            // Update the specific captain in the list
+            const existingElement = document.getElementById(`captain_${captain.captainId}`);
+            if (existingElement) {
+                existingElement.outerHTML = createCaptainHTML(captain);
+            } else {
+                // Add new captain to the list
+                const container = document.getElementById('captainsList');
+                if (container.innerHTML.includes('لا يوجد كباتن')) {
+                    container.innerHTML = '';
+                }
+                container.innerHTML += createCaptainHTML(captain);
+            }
+
+            logMessage(`تم تحديث موقع الكابتن ${captain.captainName}`, 'info');
+        }
+
+        // Remove captain from list
+        function removeCaptain(captainId) {
+            captains.delete(captainId);
+            
+            const element = document.getElementById(`captain_${captainId}`);
+            if (element) {
+                element.remove();
+            }
+
+            // Update count
+            document.getElementById('trackedCaptains').textContent = captains.size;
+
+            logMessage(`تم إزالة الكابتن ${captainId}`, 'info');
+
+            // Show empty message if no captains
+            if (captains.size === 0) {
+                document.getElementById('captainsList').innerHTML = 
+                    '<p style="text-align: center; color: #6c757d;">لا يوجد كباتن متتبعين حالياً</p>';
+            }
+        }
+
+        // Create captain HTML
+        function createCaptainHTML(captain) {
+            const statusClass = captain.isOnline ? 'captain-online' : 'captain-offline';
+            const statusText = captain.isOnline ? 'متصل' : 'غير متصل';
+            const lastUpdate = new Date(captain.timestamp).toLocaleString('ar');
+
+            return `
+                <div class="captain-item ${statusClass}" id="captain_${captain.captainId}">
+                    <div class="captain-header">
+                        <div>
+                            <div class="captain-name">🚗 ${captain.captainName}</div>
+                            <div class="captain-location">📱 ${captain.captainPhone}</div>
+                        </div>
+                        <div>
+                            <span style="color: ${captain.isOnline ? '#28a745' : '#6c757d'}">
+                                ${statusText}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="captain-location">
+                        📍 خط العرض: ${captain.latitude.toFixed(6)}، خط الطول: ${captain.longitude.toFixed(6)}
+                    </div>
+                    <div class="captain-location">
+                        ⏰ آخر تحديث: ${lastUpdate}
+                    </div>
+                    ${captain.speed ? `<div class="captain-location">🏃‍♂️ السرعة: ${Math.round(captain.speed)} كم/ساعة</div>` : ''}
+                </div>
+            `;
+        }
+
+        // Log message to console
+        function logMessage(message, type = 'info') {
+            const logPanel = document.getElementById('logPanel');
+            const timestamp = new Date().toLocaleTimeString('ar');
+            
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry log-${type}`;
+            logEntry.innerHTML = `<span>[${timestamp}]</span> ${message}`;
+            
+            logPanel.appendChild(logEntry);
+            logPanel.scrollTop = logPanel.scrollHeight;
+
+            // Keep only last 50 log entries
+            while (logPanel.children.length > 50) {
+                logPanel.removeChild(logPanel.firstChild);
+            }
+        }
+
+        // Update system uptime
+        function updateUptime() {
+            const uptime = performance.now() / 1000; // seconds
+            const hours = Math.floor(uptime / 3600);
+            const minutes = Math.floor((uptime % 3600) / 60);
+            const seconds = Math.floor(uptime % 60);
+            
+            const formatted = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            document.getElementById('systemUptime').textContent = formatted;
+        }
+
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', init);
+
+        // Update uptime every second
+        setInterval(updateUptime, 1000);
+
+        // Auto-refresh data every 30 seconds
+        setInterval(() => {
+            if (socket && socket.connected) {
+                refreshData();
+            }
+        }, 30000);
+    </script>
+</body>
+</html>

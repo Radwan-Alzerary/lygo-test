@@ -1932,6 +1932,11 @@ class CaptainSocketService {
       // Share location with customer if on active ride
       await this.shareLocationWithCustomer(captainId, data);
 
+      // Update location tracking service for admin monitoring
+      if (this.shared.locationTrackingService) {
+        await this.shared.locationTrackingService.updateCaptainLocation(captainId, data);
+      }
+
       // Update captain activity
       this.updateCaptainActivity(captainId, 'location_updated');
 
@@ -2074,6 +2079,11 @@ class CaptainSocketService {
 
     // Clean up ride sharing
     this.cleanupRideSharing(captainId);
+
+    // Remove captain from location tracking
+    if (this.shared.locationTrackingService) {
+      this.shared.locationTrackingService.removeCaptainLocation(captainId);
+    }
 
     // Update session data
     this.updateCaptainSession(captainId, 'disconnected', { reason, duration: Date.now() - startTime });

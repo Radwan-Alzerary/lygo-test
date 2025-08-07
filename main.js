@@ -24,6 +24,8 @@ const SystemService = require("./services/systemService");
 const ChatService = require("./services/chatService"); // Chat service
 const PaymentService = require("./services/paymentService"); // Payment service
 const StateManagementService = require("./services/stateManagementService"); // State management service
+const LocationTrackingService = require("./services/locationTrackingService"); // Location tracking service
+const AdminSocketService = require("./services/adminSocketService"); // Admin socket service
 
 // Import API routes
 const createApiRoutes = require("./routes/api");
@@ -76,6 +78,8 @@ class RideHailingApp {
     this.chatService = null; // Chat service instance
     this.paymentService = null; // Payment service instance
     this.stateManagementService = null; // State management service instance
+    this.locationTrackingService = null; // Location tracking service instance
+    this.adminSocketService = null; // Admin socket service instance
 
     this.logger.info('[System] RideHailingApp instance created.');
   }
@@ -151,6 +155,10 @@ class RideHailingApp {
       next();
     });
 
+    // Add services to app.locals for API access
+    this.app.locals.locationTrackingService = this.locationTrackingService;
+    this.app.locals.adminSocketService = this.adminSocketService;
+
     // Load main application routes
     this.app.use(require("./routes")); // Assumes ./routes defines view routes, etc.
     this.logger.info('[System] Loaded main application routes from ./routes with service injection.');
@@ -192,6 +200,10 @@ class RideHailingApp {
     this.stateManagementService = new StateManagementService(this.logger, this.redisClient);
     this.logger.info('[System] State management service initialized successfully.');
 
+    // Initialize location tracking service
+    this.locationTrackingService = new LocationTrackingService(this.logger, this.redisClient);
+    this.logger.info('[System] Location tracking service initialized successfully.');
+
     const shared = {
       onlineCustomers: this.onlineCustomers,
       onlineCaptains: this.onlineCaptains,
@@ -202,7 +214,8 @@ class RideHailingApp {
       chatService: this.chatService, // Add chat service to shared dependencies
       paymentService: this.paymentService, // Add payment service to shared dependencies
       financialAccountService: this.financialAccountService, // Add financial account service to shared dependencies
-      stateManagementService: this.stateManagementService // Add state management service to shared dependencies
+      stateManagementService: this.stateManagementService, // Add state management service to shared dependencies
+      locationTrackingService: this.locationTrackingService // Add location tracking service to shared dependencies
     };
 
     /* 2. أنشئ Dispatcher أولاً */
@@ -221,6 +234,11 @@ class RideHailingApp {
 
     this.captainSocketService = new CaptainSocketService(this.io, this.logger, shared);
     await this.captainSocketService.initialize();
+
+    // Initialize admin socket service for location tracking
+    this.adminSocketService = new AdminSocketService(this.io, this.logger, shared);
+    await this.adminSocketService.initialize();
+    this.logger.info('[System] Admin socket service initialized successfully.');
 
     /* 5. عرّف الخدمات داخل الـ dispatcher إذا كان يحتاجها */
     this.dispatchService.setSocketServices(
@@ -338,6 +356,34 @@ class RideHailingApp {
     // State management system status
     const stateManagementEnabled = this.stateManagementService ? 'ENABLED' : 'DISABLED';
     this.logger.info(`- State Management System: ${stateManagementEnabled}`);
+    
+    // Location tracking system status
+    const locationTrackingEnabled = this.locationTrackingService ? 'ENABLED' : 'DISABLED';
+    this.logger.info(`- Location Tracking System: ${locationTrackingEnabled}`);
+    
+    if (this.locationTrackingService) {
+      const trackingStats = this.locationTrackingService.getTrackingStats();
+      this.logger.info('  📍 Location tracking features available:');
+      this.logger.info(`    - Active tracking sessions: ${trackingStats.activeSessions}`);
+      this.logger.info(`    - Tracked captains: ${trackingStats.trackedCaptains}`);
+      this.logger.info('    - Real-time captain location monitoring');
+      this.logger.info('    - Admin location tracking dashboard');
+      this.logger.info('    - Socket namespace: /admin for tracking connections');
+    }
+
+    // Admin socket system status
+    const adminSocketEnabled = this.adminSocketService ? 'ENABLED' : 'DISABLED';
+    this.logger.info(`- Admin Socket System: ${adminSocketEnabled}`);
+    
+    if (this.adminSocketService) {
+      const adminStats = this.adminSocketService.getAdminStats();
+      this.logger.info('  👨‍💼 Admin socket features available:');
+      this.logger.info(`    - Connected admins: ${adminStats.totalConnected}`);
+      this.logger.info(`    - Active tracking sessions: ${adminStats.tracking}`);
+      this.logger.info('    - Real-time location broadcasting');
+      this.logger.info('    - JWT authentication for admin connections');
+      this.logger.info('    - Role-based access control');
+    }
     
     if (this.stateManagementService) {
       this.logger.info('  ✅ State management features available:');

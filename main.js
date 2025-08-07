@@ -248,6 +248,20 @@ class RideHailingApp {
     // Verify hide ride feature
     const hideRideEnabled = this.captainSocketService?.dispatchService ? 'ENABLED' : 'DISABLED';
     this.logger.info(`- Hide Ride Feature: ${hideRideEnabled}`);
+    
+    // Chat system status
+    const chatEnabled = this.chatService ? 'ENABLED' : 'DISABLED';
+    this.logger.info(`- Chat System: ${chatEnabled}`);
+    
+    if (this.chatService) {
+      this.logger.info('  ✅ Chat features available:');
+      this.logger.info('    - Real-time messaging');
+      this.logger.info('    - Quick messages (Customer: 5, Driver: 6)');
+      this.logger.info('    - Typing indicators');
+      this.logger.info('    - Message read receipts');
+      this.logger.info('    - Chat history & Redis caching');
+      this.logger.info('    - Rate limiting (30 msg/min)');
+    }
   }
 }
 

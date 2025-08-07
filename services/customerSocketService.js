@@ -909,11 +909,11 @@ class CustomerSocketService {
       });
 
       // Get ride details to find driver
-      const ride = await Ride.findById(rideId).select('driverId');
+      const ride = await Ride.findById(rideId).select('driver');
       
       // Notify driver if online
-      if (ride && ride.driverId) {
-        const driverSocketId = this.onlineCaptains[ride.driverId.toString()];
+      if (ride && ride.driver) {
+        const driverSocketId = this.onlineCaptains[ride.driver.toString()];
         if (driverSocketId) {
           this.io.to(driverSocketId).emit('chatMessage', {
             messageId: message._id,
@@ -927,7 +927,7 @@ class CustomerSocketService {
             messageStatus: message.messageStatus
           });
 
-          this.logger.debug(`[Chat] Message sent from customer ${customerId} to driver ${ride.driverId} for ride ${rideId}`);
+          this.logger.debug(`[Chat] Message sent from customer ${customerId} to driver ${ride.driver} for ride ${rideId}`);
         }
       }
 
@@ -980,8 +980,8 @@ class CustomerSocketService {
       }
 
       // Verify customer is part of this ride
-      const ride = await Ride.findById(rideId).select('customerId');
-      if (!ride || ride.customerId.toString() !== customerId) {
+      const ride = await Ride.findById(rideId).select('passenger');
+      if (!ride || ride.passenger.toString() !== customerId) {
         if (callback) callback({ 
           success: false, 
           message: "Unauthorized access to chat history" 
@@ -1028,8 +1028,8 @@ class CustomerSocketService {
       }
 
       // Verify customer is part of this ride
-      const ride = await Ride.findById(rideId).select('customerId driverId');
-      if (!ride || ride.customerId.toString() !== customerId) {
+      const ride = await Ride.findById(rideId).select('passenger driver');
+      if (!ride || ride.passenger.toString() !== customerId) {
         this.logger.warn(`[Chat] Unauthorized attempt to mark messages as read by customer ${customerId} for ride ${rideId}`);
         return;
       }
@@ -1038,8 +1038,8 @@ class CustomerSocketService {
       const result = await this.chatService.markMessagesAsRead(rideId, messageIds, 'customer');
 
       // Notify driver if online
-      if (ride.driverId) {
-        const driverSocketId = this.onlineCaptains[ride.driverId.toString()];
+      if (ride.driver) {
+        const driverSocketId = this.onlineCaptains[ride.driver.toString()];
         if (driverSocketId) {
           this.io.to(driverSocketId).emit('messageRead', {
             rideId: rideId,
@@ -1073,8 +1073,8 @@ class CustomerSocketService {
       }
 
       // Verify customer is part of this ride
-      const ride = await Ride.findById(rideId).select('customerId driverId');
-      if (!ride || ride.customerId.toString() !== customerId) {
+      const ride = await Ride.findById(rideId).select('passenger driver');
+      if (!ride || ride.passenger.toString() !== customerId) {
         this.logger.warn(`[Chat] Unauthorized typing indicator from customer ${customerId} for ride ${rideId}`);
         return;
       }
@@ -1088,8 +1088,8 @@ class CustomerSocketService {
       });
 
       // Notify driver if online
-      if (ride.driverId) {
-        const driverSocketId = this.onlineCaptains[ride.driverId.toString()];
+      if (ride.driver) {
+        const driverSocketId = this.onlineCaptains[ride.driver.toString()];
         if (driverSocketId) {
           this.io.to(driverSocketId).emit('typingIndicator', {
             rideId: rideId,

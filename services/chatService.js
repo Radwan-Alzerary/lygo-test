@@ -82,8 +82,8 @@ class ChatService {
 
       // التحقق من أن المرسل جزء من الرحلة
       const isAuthorized = (
-        (senderType === 'customer' && ride.customerId.toString() === senderId.toString()) ||
-        (senderType === 'driver' && ride.driverId && ride.driverId.toString() === senderId.toString())
+        (senderType === 'customer' && ride.passenger && ride.passenger.toString() === senderId.toString()) ||
+        (senderType === 'driver' && ride.driver && ride.driver.toString() === senderId.toString())
       );
 
       if (!isAuthorized) {

@@ -410,6 +410,9 @@ class CaptainSocketService {
       this.connectionMetrics.authenticatedConnections++;
       this.logger.info(`[Socket.IO Captain] ✅ Captain ${captainId} authenticated successfully. Socket ID: ${socket.id}`);
 
+      // Log successful authentication for monitoring
+      this.logSuccessfulAuthentication(captainId, socket.id);
+
     } catch (error) {
       this.logger.error(`[Socket.IO Captain] Error during authentication for captain ${captainId}:`, error);
       this.rejectConnection(socket, 'authentication_error', 'Internal authentication error');
@@ -1095,7 +1098,7 @@ class CaptainSocketService {
     } catch (err) {
       this.logger.error(`[Socket.IO Captain] Error handling rejection by captain ${captainId}:`, err);
       this.sendError(socket, "Failed to process rejection", rideId);
-      this.recordError(captainId, err);
+      this.recordError(captainId, err, 'ride_rejection');
     }
   }
 
@@ -1195,7 +1198,7 @@ class CaptainSocketService {
     } catch (err) {
       this.logger.error(`[Socket.IO Captain] Error handling acceptance by captain ${captainId}:`, err);
       this.sendError(socket, "Failed to accept ride", rideId);
-      this.recordError(captainId, err);
+      this.recordError(captainId, err, 'ride_acceptance');
     }
   }
 
@@ -1916,15 +1919,17 @@ class CaptainSocketService {
   }
 
   /**
-   * Record error for captain
+   * Record error for captain with enhanced tracking and context
    */
-  recordError(captainId, error) {
+  recordError(captainId, error, context = null) {
     try {
       const session = this.captainSessions.get(captainId);
       if (session) {
         session.errors++;
         session.lastError = {
           message: error.message,
+          stack: error.stack,
+          context: context,
           timestamp: new Date()
         };
       }
@@ -1932,8 +1937,35 @@ class CaptainSocketService {
       this.errorRecovery.consecutiveErrors++;
       this.errorRecovery.lastErrorTime = new Date();
       
+      // Enhanced logging with context
+      const errorContext = context ? ` (Context: ${context})` : '';
+      this.logger.error(`[Error Tracking] Captain ${captainId} error #${this.errorRecovery.consecutiveErrors}${errorContext}: ${error.message}`);
+      
+      // Warn if error rate is getting high
+      if (this.errorRecovery.consecutiveErrors > 5) {
+        this.logger.warn(`[Error Tracking] High error rate detected: ${this.errorRecovery.consecutiveErrors} consecutive errors. Circuit breaker may activate soon.`);
+      }
+      
     } catch (err) {
       this.logger.error(`[Error Recording] Failed to record error for captain ${captainId}:`, err);
+    }
+  }
+
+  /**
+   * Log successful authentication for monitoring
+   */
+  logSuccessfulAuthentication(captainId, socketId) {
+    try {
+      const session = this.captainSessions.get(captainId);
+      if (session) {
+        session.lastSuccessfulAuth = new Date();
+        session.authCount = (session.authCount || 0) + 1;
+      }
+      
+      // Log for monitoring and analytics
+      this.logger.debug(`[Auth Success] Captain ${captainId} authenticated (Socket: ${socketId}) - Total auths: ${session?.authCount || 1}`);
+    } catch (error) {
+      this.logger.warn(`[Auth Success] Failed to log authentication for captain ${captainId}:`, error);
     }
   }
 
@@ -1942,10 +1974,43 @@ class CaptainSocketService {
    */
   resetErrorRecovery() {
     if (this.errorRecovery.consecutiveErrors > 0 || this.errorRecovery.circuitBreakerOpen) {
-      this.logger.info('[CaptainSocketService] Resetting error recovery state - operations are healthy');
+      const previousErrors = this.errorRecovery.consecutiveErrors;
+      const wasCircuitOpen = this.errorRecovery.circuitBreakerOpen;
+      
       this.errorRecovery.consecutiveErrors = 0;
       this.errorRecovery.lastErrorTime = null;
       this.errorRecovery.circuitBreakerOpen = false;
+      
+      this.logger.info(`[CaptainSocketService] ✅ Error recovery reset - System healthy (cleared ${previousErrors} errors, circuit breaker was ${wasCircuitOpen ? 'open' : 'closed'})`);
+    }
+  }
+
+  /**
+   * Get circuit breaker status for monitoring
+   */
+  getCircuitBreakerStatus() {
+    const status = {
+      consecutiveErrors: this.errorRecovery.consecutiveErrors,
+      lastErrorTime: this.errorRecovery.lastErrorTime,
+      circuitBreakerOpen: this.errorRecovery.circuitBreakerOpen,
+      isHealthy: this.errorRecovery.consecutiveErrors < 10 && !this.errorRecovery.circuitBreakerOpen,
+      activeSessions: this.captainSessions.size,
+      timestamp: new Date()
+    };
+    
+    return status;
+  }
+
+  /**
+   * Log system health status for monitoring
+   */
+  logSystemHealth() {
+    try {
+      const status = this.getCircuitBreakerStatus();
+      const healthStatus = status.isHealthy ? 'Healthy' : 'Degraded';
+      this.logger.info(`[System Health] Captain Service: ${healthStatus} | Active Sessions: ${status.activeSessions} | Error Count: ${status.consecutiveErrors} | Circuit Breaker: ${status.circuitBreakerOpen ? 'Open' : 'Closed'}`);
+    } catch (err) {
+      this.logger.error('[System Health] Failed to log system health:', err);
     }
   }
 
@@ -2014,7 +2079,7 @@ class CaptainSocketService {
   }
 
   /**
-   * Perform health check
+   * Perform health check with enhanced monitoring
    */
   performHealthCheck() {
     try {
@@ -2022,16 +2087,40 @@ class CaptainSocketService {
       const onlineCaptains = Object.keys(this.onlineCaptains).length;
       const memoryUsage = process.memoryUsage();
       
-      this.logger.info(`[Health] Active sessions: ${activeSessions}, Online captains: ${onlineCaptains}, Memory: ${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`);
+      // Log detailed system health
+      this.logSystemHealth();
+      
+      this.logger.info(`[Health Check] Active sessions: ${activeSessions}, Online captains: ${onlineCaptains}, Memory: ${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`);
       
       // Check for memory leaks
       if (memoryUsage.heapUsed > 500 * 1024 * 1024) { // 500MB
-        this.logger.warn('[Health] High memory usage detected');
+        this.logger.warn('[Health] High memory usage detected - potential memory leak');
       }
       
-      // Check error rate
-      if (this.errorRecovery.consecutiveErrors > 10) {
-        this.logger.warn('[Health] High error rate detected');
+      // Check error rate and circuit breaker status
+      const circuitStatus = this.getCircuitBreakerStatus();
+      if (circuitStatus.consecutiveErrors > 10) {
+        this.logger.warn(`[Health] High error rate detected: ${circuitStatus.consecutiveErrors} consecutive errors`);
+      }
+      
+      if (circuitStatus.circuitBreakerOpen) {
+        this.logger.error('[Health] Circuit breaker is open - service degraded');
+      }
+      
+      // Check session health
+      let healthySessions = 0;
+      let unhealthySessions = 0;
+      
+      for (const [captainId, session] of this.captainSessions) {
+        if (session.errors > 10) {
+          unhealthySessions++;
+        } else {
+          healthySessions++;
+        }
+      }
+      
+      if (unhealthySessions > 0) {
+        this.logger.warn(`[Health] ${unhealthySessions} captain sessions have high error counts`);
       }
       
     } catch (error) {
@@ -2337,15 +2426,7 @@ class CaptainSocketService {
     };
   }
 
-  /**
-   * Reset error recovery state
-   */
-  resetErrorRecovery() {
-    this.errorRecovery.consecutiveErrors = 0;
-    this.errorRecovery.lastErrorTime = null;
-    this.errorRecovery.circuitBreakerOpen = false;
-    this.logger.info('[CaptainSocketService] Error recovery state reset');
-  }
+  // Removed duplicate resetErrorRecovery method - using the more intelligent version above
 
   /**
    * Reset performance metrics

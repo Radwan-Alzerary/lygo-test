@@ -10,6 +10,7 @@ router.use("/financial",authenticateToken, require("./financial"));
 router.use("/driver", require("./driver"));
 router.use("/system",authenticateToken, require("./systemSetting"));
 router.use("/ride", require("./ride"));
+router.use("/rides", require("./payments")); // Add payment routes under /rides prefix
 router.use("/places",authenticateToken, require("./places"));
 router.get("/delete-account", (req, res) => {
   res.render("delete-account-phone");

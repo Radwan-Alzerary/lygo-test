@@ -94,11 +94,11 @@ class RideHailingApp {
       // Setup view engine
       this.setupViewEngine();
 
-      // Setup routes
-      this.setupRoutes();
-
-      // Initialize services
+      // Initialize services first
       await this.initializeServices();
+
+      // Setup routes after services are initialized
+      this.setupRoutes();
 
       // Setup error handling
       this.setupErrorHandling();
@@ -142,9 +142,17 @@ class RideHailingApp {
   }
 
   setupRoutes() {
+    // Add middleware to inject services into request context
+    this.app.use((req, res, next) => {
+      req.paymentService = this.paymentService;
+      req.chatService = this.chatService;
+      req.stateManagementService = this.stateManagementService;
+      next();
+    });
+
     // Load main application routes
     this.app.use(require("./routes")); // Assumes ./routes defines view routes, etc.
-    this.logger.info('[System] Loaded main application routes from ./routes.');
+    this.logger.info('[System] Loaded main application routes from ./routes with service injection.');
   }
 
   async initializeServices() {

@@ -174,6 +174,20 @@ class RideHailingApp {
     this.financialAccountService = new FinancialAccountService(this.logger);
     this.logger.info('[System] Financial account service initialized successfully.');
 
+    // Initialize main vault system
+    try {
+      const vaultInit = await this.financialAccountService.initializeMainVaultSystem();
+      if (vaultInit.created) {
+        this.logger.info('[System] 🏦 Main vault system created successfully');
+      } else {
+        this.logger.info('[System] 🏦 Main vault system already operational');
+      }
+      this.logger.info(`[System] 💰 Main vault balance: ${vaultInit.balance} IQD`);
+    } catch (error) {
+      this.logger.warn('[System] ⚠️  Main vault initialization warning:', error.message);
+      this.logger.info('[System] 🔄 Main vault will be created when first needed');
+    }
+
     // Initialize state management service
     this.stateManagementService = new StateManagementService(this.logger, this.redisClient);
     this.logger.info('[System] State management service initialized successfully.');
@@ -286,6 +300,12 @@ class RideHailingApp {
     const paymentEnabled = this.paymentService ? 'ENABLED' : 'DISABLED';
     this.logger.info(`- Payment System: ${paymentEnabled}`);
     
+    // Main Vault System status
+    if (this.paymentService) {
+      this.logger.info(`- Main Vault System: ENABLED`);
+      this.logMainVaultStatus();
+    }
+    
     if (this.chatService) {
       this.logger.info('  ✅ Chat features available:');
       this.logger.info('    - Real-time messaging');
@@ -301,12 +321,17 @@ class RideHailingApp {
       this.logger.info('    - POST /api/rides/payment/ (Captain payment submission)');
       this.logger.info('    - GET /api/rides/payments/history (Payment history)');
       this.logger.info('    - GET /api/rides/payments/stats (Payment statistics)');
+      this.logger.info('    - GET /api/vault/stats (Main vault statistics - Admin only)');
+      this.logger.info('    - GET /api/vault/balance (Main vault balance - Admin only)');
       this.logger.info('    - Socket: submitPayment (New captain payment flow)');
+      this.logger.info('    - Socket: vault_deduction (Main vault deduction notifications)');
       this.logger.info('    - Ride state: awaiting_payment supported');
       this.logger.info('    - Automatic commission calculation (15%)');
+      this.logger.info('    - Main vault deduction (20% on ride acceptance)');
       this.logger.info('    - Captain earnings tracking');
       this.logger.info('    - Extra amount transfer (Captain -> Customer)');
       this.logger.info('    - Commission transfer (Captain -> Admin)');
+      this.logger.info('    - Main vault transfer (Captain -> System)');
       this.logger.info('    - Payment dispute handling');
     }
 
@@ -322,6 +347,27 @@ class RideHailingApp {
       this.logger.info('    - Redis caching for quick access');
       this.logger.info('    - Promo code validation');
       this.logger.info('    - Active ride restoration');
+    }
+  }
+
+  // NEW: Method to log main vault status
+  async logMainVaultStatus() {
+    try {
+      if (this.paymentService && this.paymentService.getMainVaultStats) {
+        const vaultStats = await this.paymentService.getMainVaultStats();
+        this.logger.info('  🏦 Main Vault Status:');
+        this.logger.info(`    - Current Balance: ${vaultStats.balance} ${vaultStats.currency}`);
+        this.logger.info(`    - Deduction Rate: ${(vaultStats.deductionRate * 100).toFixed(1)}% (from ride settings)`);
+        this.logger.info(`    - Vault Enabled: ${vaultStats.enabled ? 'YES' : 'NO'}`);
+        this.logger.info(`    - Total Deductions: ${vaultStats.totalDeductions} ${vaultStats.currency} (${vaultStats.totalTransactions} transactions)`);
+        this.logger.info(`    - Today's Deductions: ${vaultStats.dailyDeductions} ${vaultStats.currency} (${vaultStats.dailyTransactions} transactions)`);
+        this.logger.info(`    - Status: OPERATIONAL ✅`);
+      } else {
+        this.logger.info('  🏦 Main Vault Status: INITIALIZING...');
+      }
+    } catch (error) {
+      this.logger.warn('  🏦 Main Vault Status: ERROR - Will be created when needed');
+      this.logger.debug('Main vault error details:', error.message);
     }
   }
 }

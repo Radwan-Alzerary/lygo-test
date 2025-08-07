@@ -90,6 +90,20 @@ const rideSchema = new mongoose.Schema(
     pickupAddress: { type: String },   // حي الجامعة، الموصل …
     dropoffAddress: { type: String },
 
+    // Main vault deduction tracking
+    mainVaultDeducted: {
+      type: Boolean,
+      default: false,
+    },
+    mainVaultDeductedAt: {
+      type: Date,
+      default: null,
+    },
+    mainVaultDeductionAmount: {
+      type: Number,
+      default: 0,
+    },
+
   },
   {
     timestamps: true,

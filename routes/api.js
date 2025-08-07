@@ -53,6 +53,70 @@ const createApiRoutes = (logger, dispatchService, chatService, paymentService, s
   // Use payment routes - these are mounted under /rides/
   router.use('/rides', paymentRoutes);
   
+  // Main vault API endpoints
+  router.get('/vault/stats', authenticateToken, async (req, res) => {
+    try {
+      logger.info(`[API] GET /api/vault/stats requested by user ${req.user.userId}`);
+      
+      // Only allow admin users to access vault stats
+      if (req.user.userType !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. Admin privileges required.'
+        });
+      }
+
+      const stats = await paymentService.getMainVaultStats();
+      
+      res.json({
+        success: true,
+        data: stats,
+        message: 'Main vault statistics retrieved successfully'
+      });
+    } catch (error) {
+      logger.error('[API] Error getting main vault stats:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to retrieve main vault statistics',
+        error: error.message
+      });
+    }
+  });
+
+  router.get('/vault/balance', authenticateToken, async (req, res) => {
+    try {
+      logger.info(`[API] GET /api/vault/balance requested by user ${req.user.userId}`);
+      
+      // Only allow admin users to access vault balance
+      if (req.user.userType !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. Admin privileges required.'
+        });
+      }
+
+      const mainVault = await paymentService.getOrCreateMainVault();
+      
+      res.json({
+        success: true,
+        data: {
+          balance: mainVault.vault,
+          currency: mainVault.currency,
+          accountType: mainVault.accountType,
+          lastUpdated: mainVault.updatedAt
+        },
+        message: 'Main vault balance retrieved successfully'
+      });
+    } catch (error) {
+      logger.error('[API] Error getting main vault balance:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to retrieve main vault balance',
+        error: error.message
+      });
+    }
+  });
+  
   // Use state management routes
   router.use('/', stateManagementRoutes);
 

@@ -1253,21 +1253,73 @@ class CaptainSocketService {
   }
 
   /**
-   * Accept ride in database atomically
+   * Accept ride in database atomically with main vault deduction
    */
   async acceptRideInDatabase(rideId, captainId) {
-    return await Ride.findOneAndUpdate(
-      { _id: rideId, status: "requested" },
-      {
-        $set: {
-          status: "accepted",
-          driver: captainId,
-          isDispatching: false,
-          acceptedAt: new Date()
+    try {
+      // First, get ride details to calculate deduction
+      const ride = await Ride.findOne({ _id: rideId, status: "requested" }).lean();
+      if (!ride) {
+        this.logger.warn(`[acceptRideInDatabase] Ride ${rideId} not found or not in requested status`);
+        return null;
+      }
+
+      // Process main vault deduction (20% of ride amount)
+      if (this.paymentService && ride.totalFare) {
+        try {
+          const deductionResult = await this.paymentService.processRideDeduction(captainId, ride.totalFare);
+          this.logger.info(`[acceptRideInDatabase] Main vault deduction processed: ${deductionResult.deductionAmount} IQD from captain ${captainId}`);
+          
+          // Notify captain about deduction
+          const captainSocket = this.getCaptainSocket(captainId);
+          if (captainSocket) {
+            captainSocket.emit('vault_deduction', {
+              type: 'ride_acceptance',
+              deductionAmount: deductionResult.deductionAmount,
+              remainingBalance: deductionResult.captainRemainingBalance,
+              rideId: rideId,
+              message: 'Main vault deduction (20%) applied for ride acceptance'
+            });
+          }
+
+          // Update ride with deduction details before accepting
+          await Ride.findOneAndUpdate(
+            { _id: rideId, status: "requested" },
+            {
+              $set: {
+                mainVaultDeductionAmount: deductionResult.deductionAmount
+              }
+            }
+          );
+          
+        } catch (deductionError) {
+          this.logger.error(`[acceptRideInDatabase] Main vault deduction failed for captain ${captainId}:`, deductionError);
+          
+          // If deduction fails, don't accept the ride
+          throw new Error(`Cannot accept ride: ${deductionError.message}`);
         }
-      },
-      { new: true }
-    ).populate('passenger', 'name phoneNumber').lean();
+      }
+
+      // Now accept the ride in database
+      return await Ride.findOneAndUpdate(
+        { _id: rideId, status: "requested" },
+        {
+          $set: {
+            status: "accepted",
+            driver: captainId,
+            isDispatching: false,
+            acceptedAt: new Date(),
+            mainVaultDeducted: true,
+            mainVaultDeductedAt: new Date()
+          }
+        },
+        { new: true }
+      ).populate('passenger', 'name phoneNumber').lean();
+      
+    } catch (error) {
+      this.logger.error(`[acceptRideInDatabase] Error accepting ride ${rideId} for captain ${captainId}:`, error);
+      throw error;
+    }
   }
 
   /**

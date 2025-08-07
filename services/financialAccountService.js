@@ -327,6 +327,184 @@ class FinancialAccountService {
       return { processed: 0, failed: 0, error: error.message };
     }
   }
+
+  /**
+   * Get financial account by user ID and account type
+   * @param {String} userId - User ID
+   * @param {String} accountType - Account type (captain, customer, admin, main_vault)
+   * @returns {Object} Financial account
+   */
+  async getAccountByUserAndType(userId, accountType) {
+    try {
+      const account = await FinancialAccount.findOne({
+        user: userId,
+        accountType: accountType,
+        isActive: true
+      });
+
+      if (!account) {
+        throw new Error(`Financial account not found for user ${userId} with type ${accountType}`);
+      }
+
+      return account;
+    } catch (error) {
+      this.logger.error(`[FinancialAccountService] Error getting account for user ${userId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create financial account for user
+   * @param {String} userId - User ID
+   * @param {String} accountType - Account type
+   * @param {Number} initialBalance - Initial balance (default: 0)
+   * @param {Object} metadata - Additional metadata
+   * @returns {Object} Created financial account
+   */
+  async createAccount(userId, accountType, initialBalance = 0, metadata = {}) {
+    try {
+      // Check if account already exists
+      const existingAccount = await FinancialAccount.findOne({
+        user: userId,
+        accountType: accountType
+      });
+
+      if (existingAccount) {
+        this.logger.warn(`[FinancialAccountService] Account already exists for user ${userId} type ${accountType}`);
+        return existingAccount;
+      }
+
+      const account = new FinancialAccount({
+        user: userId,
+        accountType: accountType,
+        vault: initialBalance,
+        currency: 'IQD',
+        isActive: true,
+        metadata: {
+          createdBy: 'system',
+          ...metadata
+        }
+      });
+
+      await account.save();
+      this.logger.info(`[FinancialAccountService] Created ${accountType} account for user ${userId} with balance ${initialBalance}`);
+      
+      return account;
+    } catch (error) {
+      this.logger.error(`[FinancialAccountService] Error creating account for user ${userId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Initialize main vault system
+   * This ensures the main vault is created and ready for use
+   * @returns {Object} Main vault account information
+   */
+  async initializeMainVaultSystem() {
+    try {
+      this.logger.info('[FinancialAccountService] 🏦 Initializing main vault system...');
+      
+      const Users = require('../model/user');
+      
+      // Check if main vault already exists
+      let mainVaultAccount = await FinancialAccount.findOne({ 
+        accountType: 'main_vault',
+        isActive: true 
+      });
+
+      if (mainVaultAccount) {
+        // Populate user information
+        mainVaultAccount = await FinancialAccount.findById(mainVaultAccount._id).populate('user');
+        this.logger.info('[FinancialAccountService] ✅ Main vault already exists');
+        return {
+          exists: true,
+          account: mainVaultAccount,
+          balance: mainVaultAccount.vault,
+          message: 'Main vault system is operational'
+        };
+      }
+
+      // Create main vault user
+      let mainVaultUser = await Users.findOne({ userName: 'main_vault_system' });
+      
+      if (!mainVaultUser) {
+        // Try to find by email in case username field is different
+        mainVaultUser = await Users.findOne({ email: 'vault@lygo-system.com' });
+        
+        if (!mainVaultUser) {
+          try {
+            mainVaultUser = new Users({
+              userName: 'main_vault_system',
+              name: 'Main Vault System',
+              email: 'vault@lygo-system.com',
+              password: 'MainVaultSystem123!@#', // Strong default password
+              role: 'system',
+              isActive: true,
+              metadata: {
+                createdBy: 'financial_account_service',
+                purpose: 'main_vault',
+                isMainVault: true,
+                autoCreated: true
+              }
+            });
+            await mainVaultUser.save();
+            this.logger.info('[FinancialAccountService] ✅ Main vault user created');
+          } catch (error) {
+            if (error.code === 11000) {
+              // Duplicate key error, find existing user
+              mainVaultUser = await Users.findOne({ 
+                $or: [
+                  { userName: 'main_vault_system' },
+                  { email: 'vault@lygo-system.com' }
+                ]
+              });
+              if (!mainVaultUser) {
+                throw new Error('Could not find or create main vault user');
+              }
+            } else {
+              throw error;
+            }
+          }
+        }
+      }
+
+      // Create main vault financial account
+      mainVaultAccount = new FinancialAccount({
+        user: mainVaultUser._id,
+        accountType: 'main_vault',
+        currency: 'IQD',
+        vault: 0,
+        isActive: true,
+        metadata: {
+          createdBy: 'financial_account_service',
+          purpose: 'main_vault_deductions',
+          description: 'Main system vault for collecting ride deductions',
+          isMainVault: true,
+          autoCreated: true,
+          initializedAt: new Date()
+        }
+      });
+      await mainVaultAccount.save();
+      
+      // Populate user information
+      mainVaultAccount = await FinancialAccount.findById(mainVaultAccount._id).populate('user');
+      
+      this.logger.info('[FinancialAccountService] ✅ Main vault system initialized successfully');
+      
+      return {
+        exists: false,
+        created: true,
+        account: mainVaultAccount,
+        balance: mainVaultAccount.vault,
+        message: 'Main vault system created and operational'
+      };
+      
+    } catch (error) {
+      this.logger.error('[FinancialAccountService] ❌ Error initializing main vault system:', error);
+      throw error;
+    }
+  }
 }
 
 module.exports = FinancialAccountService;

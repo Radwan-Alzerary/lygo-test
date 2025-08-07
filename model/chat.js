@@ -76,7 +76,7 @@ ChatMessageSchema.virtual('isUnread').get(function() {
 // دالة للحصول على إحصائيات الرسائل لرحلة معينة
 ChatMessageSchema.statics.getChatStats = async function(rideId) {
   const stats = await this.aggregate([
-    { $match: { rideId: mongoose.Types.ObjectId(rideId) } },
+    { $match: { rideId: new mongoose.Types.ObjectId(rideId) } },
     {
       $group: {
         _id: "$senderType",
@@ -100,8 +100,8 @@ ChatMessageSchema.statics.markAsRead = async function(rideId, messageIds, reader
   
   const result = await this.updateMany(
     {
-      rideId: mongoose.Types.ObjectId(rideId),
-      _id: { $in: messageIds.map(id => mongoose.Types.ObjectId(id)) },
+      rideId: new mongoose.Types.ObjectId(rideId),
+      _id: { $in: messageIds.map(id => new mongoose.Types.ObjectId(id)) },
       senderType: oppositeType, // تحديد رسائل الطرف الآخر فقط
       "messageStatus.read": false
     },
@@ -121,7 +121,7 @@ ChatMessageSchema.statics.getUnreadCount = async function(rideId, readerType) {
   const oppositeType = readerType === 'customer' ? 'driver' : 'customer';
   
   const count = await this.countDocuments({
-    rideId: mongoose.Types.ObjectId(rideId),
+    rideId: new mongoose.Types.ObjectId(rideId),
     senderType: oppositeType,
     "messageStatus.read": false
   });

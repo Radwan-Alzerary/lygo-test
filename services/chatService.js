@@ -107,8 +107,12 @@ class ChatService {
       const savedMessage = await message.save();
 
       // تخزين في Redis للوصول السريع
-      if (this.redisClient) {
-        await this.cacheMessage(savedMessage);
+      if (this.redisClient && typeof this.redisClient.lpush === 'function') {
+        try {
+          await this.cacheMessage(savedMessage);
+        } catch (redisError) {
+          this.logger.warn('[ChatService] Redis caching failed, continuing without cache:', redisError.message);
+        }
       }
 
       // تحديث آخر نشاط للرحلة
@@ -328,7 +332,11 @@ class ChatService {
    * @param {Object} message - الرسالة
    */
   async cacheMessage(message) {
-    if (!this.redisClient) return;
+    // التحقق من وجود Redis client والدوال المطلوبة
+    if (!this.redisClient || typeof this.redisClient.lpush !== 'function') {
+      this.logger.debug('[ChatService] Redis client not available or lpush function missing, skipping cache');
+      return;
+    }
     
     try {
       const cacheKey = `chat:${message.rideId}`;
@@ -358,7 +366,11 @@ class ChatService {
    * @param {Array} messages - الرسائل
    */
   async cacheMessages(rideId, messages) {
-    if (!this.redisClient) return;
+    // التحقق من وجود Redis client والدوال المطلوبة
+    if (!this.redisClient || typeof this.redisClient.lpush !== 'function') {
+      this.logger.debug('[ChatService] Redis client not available for batch caching, skipping cache');
+      return;
+    }
     
     try {
       const cacheKey = `chat:${rideId}`;
@@ -394,7 +406,11 @@ class ChatService {
    * @returns {Array} الرسائل المخزنة
    */
   async getCachedMessages(rideId, limit) {
-    if (!this.redisClient) return null;
+    // التحقق من وجود Redis client والدوال المطلوبة
+    if (!this.redisClient || typeof this.redisClient.lrange !== 'function') {
+      this.logger.debug('[ChatService] Redis client not available for message retrieval');
+      return null;
+    }
     
     try {
       const cacheKey = `chat:${rideId}`;

@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { calculateRideFare } = require('../utils/fareCalculator');
+const { calculateRideFare, calculateDistance, estimateDuration } = require('../utils/fareCalculator');
 const RideSetting = require('../model/rideSetting');
 const StateManagementService = require('../services/stateManagementService');
 const authenticateToken = require('../middlewares/authenticateToken');
@@ -71,8 +71,48 @@ router.post('/calculate-fare', authenticateToken, async (req, res) => {
       scheduledTime: scheduledTime ? new Date(scheduledTime) : null
     };
 
+    // حساب المسافة بين نقطة الانطلاق والوصول
+    const distance = calculateDistance(
+      [fareData.origin.longitude, fareData.origin.latitude],
+      [fareData.destination.longitude, fareData.destination.latitude]
+    );
+
+    // تقدير مدة الرحلة
+    const estimatedDuration = estimateDuration(distance);
+
+    // إعداد بيانات مكتملة للرحلة
+    const completeRideData = {
+      ...fareData,
+      distance: distance,
+      duration: estimatedDuration,
+      requestTime: new Date(),
+      rideType: 'individual', // افتراضي
+      pickupLocation: {
+        type: 'Point',
+        coordinates: [fareData.origin.longitude, fareData.origin.latitude],
+        address: origin.address || 'نقطة الانطلاق'
+      },
+      dropoffLocation: {
+        type: 'Point', 
+        coordinates: [fareData.destination.longitude, fareData.destination.latitude],
+        address: destination.address || 'نقطة الوصول'
+      }
+    };
+
+    // الحصول على إعدادات الرحلة من قاعدة البيانات
+    const RideSettings = require('../model/rideSetting');
+    const rideSettings = await RideSettings.findOne().exec();
+    
+    if (!rideSettings) {
+      return res.status(500).json({
+        success: false,
+        message: 'لم يتم العثور على إعدادات الرحلة',
+        error: 'Ride settings not found'
+      });
+    }
+
     // حساب التكلفة الأساسية
-    const fareCalculation = await calculateRideFare(fareData);
+    const fareCalculation = calculateRideFare(completeRideData, rideSettings);
     
     if (!fareCalculation || !fareCalculation.fare) {
       return res.status(500).json({

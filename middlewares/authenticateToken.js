@@ -22,9 +22,8 @@ const authenticateToken = (req, res, next) => {
     req.user = user;
 
     // Proceed to the next middleware or route handler
+    next();
   });
-  
-  next();
 
 };
 

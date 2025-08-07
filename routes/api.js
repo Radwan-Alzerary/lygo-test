@@ -3,8 +3,9 @@ const jwt = require("jsonwebtoken");
 const Ride = require("../model/ride");
 const chatRoutes = require("./chat"); // Chat routes
 const paymentRoutes = require("./payments"); // Payment routes
+const stateManagementRoutes = require("./stateManagement"); // State management routes
 
-const createApiRoutes = (logger, dispatchService, chatService, paymentService) => {
+const createApiRoutes = (logger, dispatchService, chatService, paymentService, stateManagementService) => {
   const router = express.Router();
 
   // Middleware to inject services into request object
@@ -12,6 +13,7 @@ const createApiRoutes = (logger, dispatchService, chatService, paymentService) =
     req.chatService = chatService;
     req.dispatchService = dispatchService;
     req.paymentService = paymentService;
+    req.stateManagementService = stateManagementService;
     req.logger = logger;
     next();
   });
@@ -38,6 +40,7 @@ const createApiRoutes = (logger, dispatchService, chatService, paymentService) =
       
       req.user = {
         userId: decoded.id,
+        id: decoded.id, // Add both for compatibility
         userType: decoded.userType || 'customer' // default to customer if not specified
       };
       next();
@@ -49,6 +52,9 @@ const createApiRoutes = (logger, dispatchService, chatService, paymentService) =
   
   // Use payment routes - these are mounted under /rides/
   router.use('/rides', paymentRoutes);
+  
+  // Use state management routes
+  router.use('/', stateManagementRoutes);
 
   router.post('/requestRide', async (req, res) => {
     logger.info(`[API] Received POST /api/requestRide`);

@@ -3,6 +3,7 @@ const Ride = require("../model/ride");
 const Captain = require("../model/Driver");
 const RideSetting = require("../model/rideSetting");
 const ChatService = require("./chatService"); // Chat service for messaging
+const StateManagementService = require("./stateManagementService"); // State management service
 
 /**
  * Enterprise-Grade Captain Socket Service with Seamless Queue Management
@@ -37,6 +38,9 @@ class CaptainSocketService {
     
     // Initialize chat service
     this.chatService = new ChatService(logger, dependencies.redisClient);
+    
+    // Initialize state management service  
+    this.stateManagementService = dependencies.stateManagementService || new StateManagementService(logger, dependencies.redisClient);
     
     // 📊 ADVANCED ANALYTICS
     this.connectionMetrics = {

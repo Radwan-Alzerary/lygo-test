@@ -23,6 +23,7 @@ const DispatchService = require("./services/dispatchService");
 const SystemService = require("./services/systemService");
 const ChatService = require("./services/chatService"); // Chat service
 const PaymentService = require("./services/paymentService"); // Payment service
+const StateManagementService = require("./services/stateManagementService"); // State management service
 
 // Import API routes
 const createApiRoutes = require("./routes/api");
@@ -74,6 +75,7 @@ class RideHailingApp {
     this.systemService = null;
     this.chatService = null; // Chat service instance
     this.paymentService = null; // Payment service instance
+    this.stateManagementService = null; // State management service instance
 
     this.logger.info('[System] RideHailingApp instance created.');
   }
@@ -158,6 +160,10 @@ class RideHailingApp {
     this.paymentService = new PaymentService(this.logger, this.redisClient);
     this.logger.info('[System] Payment service initialized successfully.');
 
+    // Initialize state management service
+    this.stateManagementService = new StateManagementService(this.logger, this.redisClient);
+    this.logger.info('[System] State management service initialized successfully.');
+
     const shared = {
       onlineCustomers: this.onlineCustomers,
       onlineCaptains: this.onlineCaptains,
@@ -166,7 +172,8 @@ class RideHailingApp {
       redisClient: this.redisClient,
       calculateDistance,
       chatService: this.chatService, // Add chat service to shared dependencies
-      paymentService: this.paymentService // Add payment service to shared dependencies
+      paymentService: this.paymentService, // Add payment service to shared dependencies
+      stateManagementService: this.stateManagementService // Add state management service to shared dependencies
     };
 
     /* 2. أنشئ Dispatcher أولاً */
@@ -200,7 +207,7 @@ class RideHailingApp {
     }
 
     /* 6. API + الخلفية */
-    const apiRouter = createApiRoutes(this.logger, this.dispatchService, this.chatService, this.paymentService);
+    const apiRouter = createApiRoutes(this.logger, this.dispatchService, this.chatService, this.paymentService, this.stateManagementService);
     this.app.use("/api", apiRouter);
 
     // Initialize DispatchService after all socket services are ready
@@ -282,6 +289,20 @@ class RideHailingApp {
       this.logger.info('    - Automatic commission calculation');
       this.logger.info('    - Captain earnings tracking');
       this.logger.info('    - Payment dispute handling');
+    }
+
+    // State management system status
+    const stateManagementEnabled = this.stateManagementService ? 'ENABLED' : 'DISABLED';
+    this.logger.info(`- State Management System: ${stateManagementEnabled}`);
+    
+    if (this.stateManagementService) {
+      this.logger.info('  ✅ State management features available:');
+      this.logger.info('    - Ride state backup/restore');
+      this.logger.info('    - Trip planning backup/restore');
+      this.logger.info('    - Automatic state cleanup (every 6 hours)');
+      this.logger.info('    - Redis caching for quick access');
+      this.logger.info('    - Promo code validation');
+      this.logger.info('    - Active ride restoration');
     }
   }
 }

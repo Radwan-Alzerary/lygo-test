@@ -2,7 +2,9 @@ const jwt = require("jsonwebtoken");
 const Ride = require("../model/ride");
 const Customer = require("../model/customer"); // Assuming you have a Customer model
 const RideSetting = require("../model/rideSetting"); // Add RideSetting import
+const UserSavedState = require("../model/userSavedState"); // State management model
 const ChatService = require("./chatService"); // Chat service for messaging
+const StateManagementService = require("./stateManagementService"); // State management service
 
 class CustomerSocketService {
   constructor(io, logger, dependencies) {
@@ -19,6 +21,9 @@ class CustomerSocketService {
     
     // Initialize chat service
     this.chatService = new ChatService(logger, dependencies.redisClient);
+    
+    // Initialize state management service
+    this.stateManagementService = new StateManagementService(logger, dependencies.redisClient);
     
     // Validate dependencies
     this.validateDependencies();
@@ -524,7 +529,69 @@ class CustomerSocketService {
       // End Chat System Events
       // ===============================
 
-      // Handle disconnect
+      // ===============================
+      // State Management Events
+      // ===============================
+
+      // Save ride state
+      socket.on("saveRideState", async (data) => {
+        try {
+          await this.handleSaveRideState(socket, customerId, data);
+        } catch (error) {
+          this.logger.error(`[Socket.IO Customer] Error handling save ride state for customer ${customerId}:`, error);
+          socket.emit("saveRideStateResult", {
+            success: false,
+            error: error.message,
+            message: "فشل في حفظ الحالة"
+          });
+        }
+      });
+
+      // Restore ride state
+      socket.on("restoreRideState", async (data) => {
+        try {
+          await this.handleRestoreRideState(socket, customerId, data);
+        } catch (error) {
+          this.logger.error(`[Socket.IO Customer] Error handling restore ride state for customer ${customerId}:`, error);
+          socket.emit("restoreRideStateResult", {
+            success: false,
+            error: error.message,
+            message: "فشل في استرجاع الحالة"
+          });
+        }
+      });
+
+      // Clear saved state
+      socket.on("clearSavedState", async (data) => {
+        try {
+          await this.handleClearSavedState(socket, customerId, data);
+        } catch (error) {
+          this.logger.error(`[Socket.IO Customer] Error handling clear saved state for customer ${customerId}:`, error);
+          socket.emit("clearSavedStateResult", {
+            success: false,
+            error: error.message,
+            message: "فشل في مسح الحالة المحفوظة"
+          });
+        }
+      });
+
+      // Validate promo code
+      socket.on("validatePromoCode", async (data, callback) => {
+        try {
+          await this.handleValidatePromoCode(socket, customerId, data, callback);
+        } catch (error) {
+          this.logger.error(`[Socket.IO Customer] Error validating promo code for customer ${customerId}:`, error);
+          if (callback) callback({
+            success: false,
+            error: error.message,
+            message: "فشل في التحقق من كود الخصم"
+          });
+        }
+      });
+
+      // ===============================
+      // End State Management Events
+      // ===============================      // Handle disconnect
       socket.on("disconnect", (reason) => {
         this.handleDisconnect(socket, customerId, reason);
       });
@@ -1108,6 +1175,213 @@ class CustomerSocketService {
 
   // ===============================
   // End Chat System Methods
+  // ===============================
+
+  // ===============================
+  // State Management Methods
+  // ===============================
+
+  /**
+   * Handle save ride state request
+   * @param {Object} socket - Socket instance
+   * @param {string} customerId - Customer ID
+   * @param {Object} data - State data to save
+   */
+  async handleSaveRideState(socket, customerId, data) {
+    try {
+      this.logger.info(`[StateManagement] Customer ${customerId} requesting to save ride state`);
+
+      // Extract state information
+      const stateData = {
+        type: data.type || 'trip_planning_backup',
+        state: data.state || {},
+        sessionInfo: {
+          socketId: socket.id,
+          userAgent: socket.handshake.headers['user-agent'],
+          ipAddress: socket.handshake.address,
+          lastActivity: new Date()
+        }
+      };
+
+      // Validate required fields based on type
+      if (stateData.type === 'ride_state_backup') {
+        if (!stateData.state.rideId) {
+          throw new Error('Ride state backup requires rideId');
+        }
+      } else if (stateData.type === 'trip_planning_backup') {
+        if (!stateData.state.origin || !stateData.state.destination) {
+          throw new Error('Trip planning backup requires origin and destination');
+        }
+      }
+
+      // Save state using state management service
+      const result = await this.stateManagementService.saveUserState(customerId, stateData);
+
+      // Emit result back to customer
+      socket.emit("saveRideStateResult", result);
+
+      this.logger.info(`[StateManagement] Save ride state result for customer ${customerId}: ${result.success ? 'success' : 'failed'}`);
+
+    } catch (error) {
+      this.logger.error(`[StateManagement] Error saving ride state for customer ${customerId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Handle restore ride state request
+   * @param {Object} socket - Socket instance
+   * @param {string} customerId - Customer ID
+   * @param {Object} data - Restore parameters
+   */
+  async handleRestoreRideState(socket, customerId, data) {
+    try {
+      this.logger.info(`[StateManagement] Customer ${customerId} requesting to restore ride state`);
+
+      const type = data?.type || null; // Optional type filter
+
+      // First check for active ride
+      const activeRide = await this.stateManagementService.getActiveRide(customerId);
+      
+      if (activeRide) {
+        this.logger.info(`[StateManagement] Found active ride ${activeRide._id} for customer ${customerId}`);
+        
+        // Emit active ride restoration
+        socket.emit("restoreRideStateResult", {
+          success: true,
+          data: {
+            type: 'active_ride',
+            state: {
+              rideId: activeRide._id,
+              rideStatus: activeRide.status,
+              origin: {
+                latitude: activeRide.pickupLocation.coordinates[1],
+                longitude: activeRide.pickupLocation.coordinates[0],
+                locationName: activeRide.pickupLocation.locationName
+              },
+              destination: {
+                latitude: activeRide.dropoffLocation.coordinates[1],
+                longitude: activeRide.dropoffLocation.coordinates[0],
+                locationName: activeRide.dropoffLocation.locationName
+              },
+              estimatedFare: {
+                amount: activeRide.fare.amount,
+                currency: activeRide.fare.currency
+              },
+              paymentMethod: activeRide.paymentMethod,
+              distance: activeRide.distance,
+              duration: activeRide.duration,
+              ...(activeRide.driver && {
+                captainInfo: {
+                  id: activeRide.driver._id,
+                  name: activeRide.driver.name,
+                  phoneNumber: activeRide.driver.phoneNumber,
+                  imageUrl: activeRide.driver.imageUrl,
+                  vehicle: activeRide.driver.carDetails
+                }
+              })
+            },
+            timestamp: activeRide.createdAt,
+            source: 'active_ride'
+          }
+        });
+        return;
+      }
+
+      // If no active ride, check saved states
+      const result = await this.stateManagementService.restoreUserState(customerId, type);
+      
+      // Emit result back to customer
+      socket.emit("restoreRideStateResult", result);
+
+      this.logger.info(`[StateManagement] Restore ride state result for customer ${customerId}: ${result.success ? 'success' : 'no saved state'}`);
+
+    } catch (error) {
+      this.logger.error(`[StateManagement] Error restoring ride state for customer ${customerId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Handle clear saved state request
+   * @param {Object} socket - Socket instance
+   * @param {string} customerId - Customer ID
+   * @param {Object} data - Clear parameters
+   */
+  async handleClearSavedState(socket, customerId, data) {
+    try {
+      this.logger.info(`[StateManagement] Customer ${customerId} requesting to clear saved state`);
+
+      const type = data?.type || null; // Optional type filter
+
+      // Clear saved state using state management service
+      const result = await this.stateManagementService.clearUserSavedState(customerId, type);
+
+      // Emit result back to customer
+      socket.emit("clearSavedStateResult", result);
+
+      this.logger.info(`[StateManagement] Clear saved state result for customer ${customerId}: cleared ${result.deletedCount || 0} state(s)`);
+
+    } catch (error) {
+      this.logger.error(`[StateManagement] Error clearing saved state for customer ${customerId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Handle validate promo code request
+   * @param {Object} socket - Socket instance
+   * @param {string} customerId - Customer ID
+   * @param {Object} data - Promo code data
+   * @param {Function} callback - Response callback
+   */
+  async handleValidatePromoCode(socket, customerId, data, callback) {
+    try {
+      this.logger.info(`[StateManagement] Customer ${customerId} validating promo code: ${data.promoCode}`);
+
+      const promoData = {
+        ...data,
+        userId: customerId
+      };
+
+      // Validate promo code using state management service
+      const result = await this.stateManagementService.validatePromoCode(promoData);
+
+      // Send result via callback if provided, otherwise emit
+      if (callback) {
+        callback({
+          success: result.isValid,
+          ...(result.isValid ? {
+            discount: result.discount,
+            newFare: result.newFare,
+            message: result.message
+          } : {
+            message: result.reason
+          })
+        });
+      } else {
+        socket.emit("promoCodeValidationResult", {
+          success: result.isValid,
+          ...(result.isValid ? {
+            discount: result.discount,
+            newFare: result.newFare,
+            message: result.message
+          } : {
+            message: result.reason
+          })
+        });
+      }
+
+      this.logger.info(`[StateManagement] Promo code validation for customer ${customerId}: ${result.isValid ? 'valid' : 'invalid'}`);
+
+    } catch (error) {
+      this.logger.error(`[StateManagement] Error validating promo code for customer ${customerId}:`, error);
+      throw error;
+    }
+  }
+
+  // ===============================
+  // End State Management Methods
   // ===============================
 }
 

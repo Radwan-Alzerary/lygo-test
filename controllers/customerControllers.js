@@ -1,5 +1,6 @@
 // controllers/authController.js
 const Customer = require("../model/customer");
+const User = require("../model/user");
 const FinancialAccount = require("../model/financialAccount");
 const { handleErrors } = require("../utils/errorHandler");
 const axios = require("axios");
@@ -117,12 +118,30 @@ module.exports.registerPhoneNumber = async (req, res, next) => {
         .json({ message: "phoneNumber and project are required" });
     }
 
-    // 1) ensure customer + financialAccount
+    // 1) ensure customer + user + financialAccount
     let customer = await Customer.findOne({ phoneNumber });
     if (!customer) {
-      const financialAccount = new FinancialAccount();
+      // Create a user for the customer
+      const user = new User({
+        email: `${phoneNumber}@lygo.com`, // Generate email from phone
+        userName: `customer_${phoneNumber}`,
+        password: `temp_${phoneNumber}_${Date.now()}`, // Temporary password
+        role: "user"
+      });
+      await user.save();
+
+      // Create financial account with required fields
+      const financialAccount = new FinancialAccount({
+        user: user._id,
+        accountType: "customer"
+      });
       await financialAccount.save();
 
+      // Link financial account back to user
+      user.financialAccount = financialAccount._id;
+      await user.save();
+
+      // Create customer
       customer = new Customer({
         phoneNumber,
         project: "lygo",

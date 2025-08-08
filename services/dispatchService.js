@@ -1100,27 +1100,43 @@ class DispatchService {
   }
 
   /**
-   * Process captains in current radius with queue management
+   * Process captains in current radius with queue management and re-notification
    */
   async processRadius(rideId, nearbyCaptainIds, globalNotifiedCaptains, ride, passenger, config) {
+    // Get new captains (not yet notified)
     const newOnlineCaptains = nearbyCaptainIds.filter(captainId =>
       this.onlineCaptains[captainId] && !globalNotifiedCaptains.has(captainId)
     );
 
-    if (newOnlineCaptains.length === 0) {
+    // Get previously notified captains in this radius who might be available again
+    const previouslyNotifiedInRadius = nearbyCaptainIds.filter(captainId =>
+      this.onlineCaptains[captainId] && 
+      globalNotifiedCaptains.has(captainId) &&
+      !this.hasPendingRide(captainId) // They don't have pending rides, so they're available
+    );
+
+    if (newOnlineCaptains.length === 0 && previouslyNotifiedInRadius.length === 0) {
       this.logger.info(`[Dispatch] 👥 Ride ${rideId}: All nearby captains already notified or offline`);
       return { accepted: false, shouldStop: false };
     }
 
-    this.logger.info(`[Dispatch] 👥 Ride ${rideId}: Found ${newOnlineCaptains.length} new online captains`);
+    this.logger.info(`[Dispatch] 👥 Ride ${rideId}: Found ${newOnlineCaptains.length} new + ${previouslyNotifiedInRadius.length} available previous captains`);
 
     const rideData = this.prepareRideData(ride, passenger);
-    const notifications = await this.sendNotificationsWithQueue(rideId, newOnlineCaptains, globalNotifiedCaptains, rideData);
+    
+    // Send to new captains
+    const newNotifications = await this.sendNotificationsWithQueue(rideId, newOnlineCaptains, globalNotifiedCaptains, rideData);
+    
+    // Re-send to available previous captains (they were notified before but are now available)
+    const reNotifications = await this.resendToAvailableCaptains(rideId, previouslyNotifiedInRadius, rideData);
 
-    this.logger.info(`[Dispatch] 📤 Ride ${rideId}: Processed ${notifications.sent} immediate + ${notifications.queued} queued notifications`);
+    const totalSent = newNotifications.sent + reNotifications.sent;
+    const totalQueued = newNotifications.queued + reNotifications.queued;
+
+    this.logger.info(`[Dispatch] 📤 Ride ${rideId}: Processed ${totalSent} immediate (${newNotifications.sent} new + ${reNotifications.sent} re-sent) + ${totalQueued} queued notifications`);
 
     // Wait for responses if any notifications were sent immediately
-    if (notifications.sent > 0) {
+    if (totalSent > 0) {
       this.logger.debug(`[Dispatch] ⏳ Ride ${rideId}: Waiting ${config.dispatch.notificationTimeout}s for responses`);
       await new Promise(resolve => setTimeout(resolve, config.notificationTimeout));
 
@@ -1132,8 +1148,9 @@ class DispatchService {
         return { accepted: true, shouldStop: false };
       }
 
-      // Hide from current radius captains if expanding radius
-      this.notifyCurrentRadiusCaptainsToHide(rideId, `timeout_radius_${config.dispatch.initialRadiusKm + (nearbyCaptainIds.length * config.dispatch.radiusIncrementKm)}km`);
+      // DON'T hide from previous radius captains - keep them available for the ride
+      // Instead, just log that we're expanding radius
+      this.logger.info(`[Dispatch] 📈 Ride ${rideId}: No acceptance in radius. Previous captains remain available while expanding search.`);
     }
 
     return { accepted: false, shouldStop: false };
@@ -1180,6 +1197,59 @@ class DispatchService {
     });
 
     await Promise.all(notificationPromises);
+
+    return {
+      sent: sentImmediately,
+      queued: queuedCount,
+      total: captainIds.length
+    };
+  }
+
+  /**
+   * Re-send notifications to previously notified but now available captains
+   */
+  async resendToAvailableCaptains(rideId, captainIds, rideData) {
+    if (!captainIds || captainIds.length === 0) {
+      return { sent: 0, queued: 0, total: 0 };
+    }
+
+    let sentImmediately = 0;
+    let queuedCount = 0;
+
+    const reNotificationPromises = captainIds.map(async (captainId) => {
+      try {
+        // These captains were already in globalNotifiedCaptains, so don't add them again
+        this.currentRadiusNotifications.get(rideId).add(captainId);
+
+        // Check if captain has pending ride
+        if (this.hasPendingRide(captainId)) {
+          // Add to queue
+          const queueResult = this.addRideToQueue(captainId, { ...rideData, rideId });
+          this.logger.info(`[Dispatch] 📋 Previously notified captain ${captainId} has pending ride. Re-queued ride ${rideId} at position ${queueResult.queuePosition}`);
+          queuedCount++;
+          return { type: 'queued', captainId, queuePosition: queueResult.queuePosition };
+        } else {
+          // Re-send immediately
+          const sent = await this.sendRideNotificationToCaptain(captainId, { ...rideData, rideId, isReSend: true });
+          if (sent) {
+            sentImmediately++;
+            this.recordCaptainNotification(captainId, rideId, 're_notification');
+            this.logger.info(`[Dispatch] 🔄 Re-sent ride ${rideId} to available captain ${captainId}`);
+            return { type: 'resent', captainId };
+          } else {
+            this.logger.warn(`[Dispatch] ❌ Failed to re-send ride ${rideId} to captain ${captainId}`);
+            this.removeFromTracking(rideId, captainId);
+            return { type: 'failed', captainId };
+          }
+        }
+      } catch (error) {
+        this.logger.error(`[Dispatch] Error re-notifying captain ${captainId}:`, error);
+        this.removeFromTracking(rideId, captainId);
+        return { type: 'error', captainId, error: error.message };
+      }
+    });
+
+    await Promise.all(reNotificationPromises);
 
     return {
       sent: sentImmediately,
@@ -1702,9 +1772,16 @@ class DispatchService {
   }
 
   /**
-   * Notify current radius captains to hide ride
+   * Notify current radius captains to hide ride (DEPRECATED - no longer used)
+   * This function was causing captains to lose rides during radius expansion
    */
   notifyCurrentRadiusCaptainsToHide(rideId, reason = 'timeout') {
+    // This function is deprecated and should not be called anymore
+    // Keeping it for backward compatibility but it's no longer used
+    this.logger.debug(`[Dispatch] DEPRECATED: notifyCurrentRadiusCaptainsToHide called for ride ${rideId} - no action taken`);
+    return;
+    
+    /* OLD CODE - commented out
     const rideIdStr = rideId.toString();
     const currentRadiusCaptains = this.currentRadiusNotifications.get(rideIdStr);
     
@@ -1727,6 +1804,7 @@ class DispatchService {
 
     this.logger.debug(`[Dispatch] Notified ${notifiedCount} current radius captains to hide ride ${rideIdStr}`);
     this.currentRadiusNotifications.set(rideIdStr, new Set());
+    */
   }
 
   /**
@@ -1782,11 +1860,13 @@ class DispatchService {
       'dispatch_error': 'An error occurred with this ride request.',
       'emergency_stop': 'Dispatch service was stopped.',
       'timeout': 'Searching for captains in a wider area.',
-      'captain_cancelled_permanently': 'This ride has been permanently cancelled by another captain.'
+      'captain_cancelled_permanently': 'This ride has been permanently cancelled by another captain.',
+      'radius_expansion': 'Expanding search area - you may receive this ride again.'
     };
     
     if (reason.includes('timeout_radius_')) {
-      return 'Searching for captains in a wider area.';
+      // Don't hide from previous captains during radius expansion
+      return messages['radius_expansion'];
     }
     
     return messages[reason] || 'This ride is no longer available.';

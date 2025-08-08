@@ -318,6 +318,15 @@ class RideHailingApp {
     const paymentEnabled = this.paymentService ? 'ENABLED' : 'DISABLED';
     this.logger.info(`- Payment System: ${paymentEnabled}`);
     
+    // Ride cancellation behavior
+    this.logger.info(`- Ride Cancellation: PERMANENT CANCELLATION (No re-dispatch)`);
+    this.logger.info(`  ✅ When captain cancels ride:`);
+    this.logger.info(`    - Ride is PERMANENTLY cancelled (status: cancelled)`);
+    this.logger.info(`    - NO re-dispatch occurs`);
+    this.logger.info(`    - All captains receive hideRide immediately`);
+    this.logger.info(`    - Cancelling captain becomes available instantly`);
+    this.logger.info(`    - Customer is notified to request new ride`);
+    
     // Main Vault System status
     if (this.paymentService) {
       this.logger.info(`- Main Vault System: ENABLED`);

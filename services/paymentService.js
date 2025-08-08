@@ -787,9 +787,30 @@ class PaymentService {
       // Get captain with financial account
       const captain = await Driver.findById(captainId).populate('financialAccount');
       
-      if (!captain || !captain.financialAccount) {
-        this.logger.error(`[PaymentService] Captain or financial account not found: ${captainId}`);
+      if (!captain) {
+        this.logger.error(`[PaymentService] Captain not found: ${captainId}`);
         return;
+      }
+
+      // Check if captain has a financial account, if not create one
+      if (!captain.financialAccount) {
+        this.logger.info(`[PaymentService] Creating financial account for captain ${captainId}`);
+        const newFinancialAccount = await this.financialAccountService.createAccount(
+          captain._id, 
+          'captain', 
+          0, // Initial balance
+          {
+            purpose: 'captain_earnings',
+            description: 'Captain financial account for earnings'
+          }
+        );
+        
+        // Update captain record with financial account reference
+        captain.financialAccount = newFinancialAccount._id;
+        await captain.save();
+        
+        // Reload captain with the new financial account
+        await captain.populate('financialAccount');
       }
 
       // Update captain's financial account vault (main balance)
@@ -895,9 +916,30 @@ class PaymentService {
       // Get customer with financial account
       const customer = await Customer.findById(customerId).populate('financialAccount');
       
-      if (!customer || !customer.financialAccount) {
-        this.logger.error(`[PaymentService] Customer or financial account not found: ${customerId}`);
+      if (!customer) {
+        this.logger.error(`[PaymentService] Customer not found: ${customerId}`);
         return;
+      }
+
+      // Check if customer has a financial account, if not create one
+      if (!customer.financialAccount) {
+        this.logger.info(`[PaymentService] Creating financial account for customer ${customerId}`);
+        const newFinancialAccount = await this.financialAccountService.createAccount(
+          customer._id, 
+          'customer', 
+          0, // Initial balance - customers start with 0 and top up separately
+          {
+            purpose: 'customer_payments',
+            description: 'Customer financial account for payments'
+          }
+        );
+        
+        // Update customer record with financial account reference
+        customer.financialAccount = newFinancialAccount._id;
+        await customer.save();
+        
+        // Reload customer with the new financial account
+        await customer.populate('financialAccount');
       }
 
       // Deduct amount from customer's financial account (they paid this amount)
@@ -1007,26 +1049,39 @@ class PaymentService {
       const FinancialAccount = require('../model/financialAccount');
       const bcrypt = require('bcrypt');
 
-      // Create financial account first
-      const adminFinancialAccount = new FinancialAccount();
-      await adminFinancialAccount.save();
-
-      // Create admin user
-      const adminUser = new User({
+      // Create admin user first
+      const adminUser = new Users({
         email: 'admin@lygo-system.local',
         password: 'AdminSystem123!', // This will be hashed by the pre-save middleware
         userName: 'SystemAdmin',
         role: 'admin',
-        financialAccount: adminFinancialAccount._id,
         totalCommissions: 0,
         totalSystemEarnings: 0
       });
 
       await adminUser.save();
+
+      // Create financial account using the service
+      const adminFinancialAccount = await this.financialAccountService.createAccount(
+        adminUser._id,
+        'admin',
+        0, // Initial balance
+        {
+          purpose: 'admin_earnings',
+          description: 'Default admin financial account'
+        }
+      );
+
+      // Update admin user with financial account reference
+      adminUser.financialAccount = adminFinancialAccount._id;
+      await adminUser.save();
       this.logger.info('[PaymentService] Default admin user created successfully');
+      
+      return adminUser;
       
     } catch (error) {
       this.logger.error('[PaymentService] Error creating default admin user:', error);
+      return null;
     }
   }
 }

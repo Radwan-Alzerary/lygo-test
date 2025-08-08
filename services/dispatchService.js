@@ -846,11 +846,14 @@ class DispatchService {
       // Clear captain's entire queue since they're now busy
       const queueClearResult = this.clearCaptainQueue(captainId, 'ride_accepted');
       
+      // Hide ride from all other captains IMMEDIATELY
+      this.notifyCaptainsToHideRide(rideId, captainId, 'ride_taken');
+      
+      // Clean up all related tracking immediately
+      this.cleanupRideNotifications(rideIdStr);
+      
       // Cancel dispatch process for this ride
       await this.cancelDispatchProcess(rideIdStr);
-      
-      // Hide ride from all other captains
-      this.notifyCaptainsToHideRide(rideId, captainId, 'ride_taken');
       
       // Update success metrics
       this.dispatchMetrics.successfulDispatches++;
@@ -882,19 +885,19 @@ class DispatchService {
   }
 
   /**
-   * Enhanced captain cancellation handler
+   * Enhanced captain cancellation handler with complete cleanup
    */
   async handleCaptainCancellation(rideId, captainId) {
     const rideIdStr = rideId.toString();
     const startTime = Date.now();
     
     try {
-      this.logger.info(`[Dispatch] Processing captain ${captainId} cancellation of ride ${rideIdStr}`);
+      this.logger.info(`[Dispatch] 🚫 Processing captain ${captainId} PERMANENT cancellation of ride ${rideIdStr}`);
       
       // Record cancellation in history
-      this.recordCaptainResponse(captainId, rideIdStr, 'cancelled', startTime);
+      this.recordCaptainResponse(captainId, rideIdStr, 'cancelled_permanently', startTime);
       
-      // Clean up all tracking for this ride
+      // Clean up all tracking for this ride completely
       this.cleanupRideNotifications(rideIdStr);
       
       // Cancel dispatch process if still active
@@ -903,24 +906,24 @@ class DispatchService {
       // Update metrics
       this.dispatchMetrics.failedDispatches++;
       
-      this.logger.info(`[Dispatch] Captain ${captainId} cancellation of ride ${rideIdStr} processed. All tracking cleaned up.`);
+      this.logger.info(`[Dispatch] ✅ Captain ${captainId} permanent cancellation processed. Ride ${rideIdStr} completely removed from system.`);
       
       return {
         rideId: rideIdStr,
         captainId: captainId,
         timestamp: new Date(),
-        action: 'cancelled',
+        action: 'cancelled_permanently',
         cleanupCompleted: true,
         processingTime: Date.now() - startTime
       };
       
     } catch (error) {
-      this.logger.error(`[Dispatch] Error handling cancellation for captain ${captainId}, ride ${rideIdStr}:`, error);
+      this.logger.error(`[Dispatch] Error handling permanent cancellation for captain ${captainId}, ride ${rideIdStr}:`, error);
       return {
         rideId: rideIdStr,
         captainId: captainId,
         timestamp: new Date(),
-        action: 'cancelled',
+        action: 'cancelled_permanently',
         error: error.message,
         processingTime: Date.now() - startTime
       };
@@ -1727,32 +1730,44 @@ class DispatchService {
   }
 
   /**
-   * Notify captains to hide ride
+   * Notify captains to hide ride with immediate effect
    */
   notifyCaptainsToHideRide(rideId, excludeCaptainId = null, reason = 'ride_taken') {
     const rideIdStr = rideId.toString();
     const notifiedCaptains = this.rideNotifications.get(rideIdStr);
     
     if (!notifiedCaptains || notifiedCaptains.size === 0) {
+      this.logger.debug(`[Dispatch] No captains to notify for ride ${rideIdStr} hide`);
       return;
     }
 
     let notifiedCount = 0;
+    const hideMessage = this.getHideMessage(reason);
+    
     notifiedCaptains.forEach(captainId => {
       if (captainId !== excludeCaptainId) {
         if (this.captainSocketService && typeof this.captainSocketService.emitToCaptain === 'function') {
           if (this.captainSocketService.emitToCaptain(captainId, "hideRide", {
             rideId: rideId,
             reason: reason,
-            message: this.getHideMessage(reason)
+            message: hideMessage,
+            timestamp: new Date().toISOString()
           })) {
             notifiedCount++;
+            // Also clear captain's pending ride if this was it
+            const pendingRide = this.getCaptainPendingRide(captainId);
+            if (pendingRide && pendingRide.rideId.toString() === rideIdStr) {
+              this.clearCaptainPendingRide(captainId);
+              this.logger.debug(`[Dispatch] Cleared pending ride for captain ${captainId} due to hide`);
+            }
           }
         }
       }
     });
 
-    this.logger.debug(`[Dispatch] Notified ${notifiedCount} captains to hide ride ${rideIdStr}`);
+    this.logger.info(`[Dispatch] 🙈 Notified ${notifiedCount} captains to hide ride ${rideIdStr} (${reason})`);
+    
+    // Clean up immediately after hiding
     this.cleanupRideNotifications(rideIdStr);
   }
 
@@ -1766,7 +1781,8 @@ class DispatchService {
       'max_radius_reached': 'No captain found for this ride.',
       'dispatch_error': 'An error occurred with this ride request.',
       'emergency_stop': 'Dispatch service was stopped.',
-      'timeout': 'Searching for captains in a wider area.'
+      'timeout': 'Searching for captains in a wider area.',
+      'captain_cancelled_permanently': 'This ride has been permanently cancelled by another captain.'
     };
     
     if (reason.includes('timeout_radius_')) {

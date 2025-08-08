@@ -1537,7 +1537,7 @@ class CaptainSocketService {
   // ===========================================================================================
 
   /**
-   * Handle captain cancellation with restart dispatch
+   * Handle captain cancellation with PERMANENT cancellation (no re-dispatch)
    */
   async handleRideCancellation(socket, captainId, data) {
     const startTime = Date.now();
@@ -1548,7 +1548,7 @@ class CaptainSocketService {
       return;
     }
 
-    this.logger.info(`[Socket.IO Captain] 🚫 Captain ${captainId} cancelling ride ${rideId}`);
+    this.logger.info(`[Socket.IO Captain] 🚫 Captain ${captainId} permanently cancelling ride ${rideId}`);
 
     try {
       const ride = await Ride.findOne({ _id: rideId, driver: captainId }).lean();
@@ -1564,31 +1564,45 @@ class CaptainSocketService {
         return;
       }
 
-      // Reset ride state for re-dispatch
-      await this.resetRideForRedispatch(ride, captainId);
+      // PERMANENTLY CANCEL the ride instead of re-dispatching
+      await this.permanentlyCancelRide(ride, captainId);
 
-      // Clean up dispatch service tracking
+      // Clean up dispatch service tracking and hide from all captains
       if (this.dispatchService) {
         await this.dispatchService.handleCaptainCancellation(rideId, captainId);
+        // Hide ride from all captains permanently
+        this.dispatchService.notifyCaptainsToHideRide(rideId, null, 'captain_cancelled_permanently');
+        // Clear any pending rides for this captain to make them available immediately
+        this.dispatchService.clearCaptainPendingRide(captainId);
+        this.dispatchService.clearCaptainQueue(captainId, 'captain_cancelled_ride');
       }
 
       // Stop location sharing
       this.cleanupRideSharing(captainId);
 
-      // Notify customer and restart dispatch
-      await this.handleRideCancellationNotification(ride);
+      // Process next ride in queue immediately for this captain
+      if (this.dispatchService) {
+        // Small delay to ensure cleanup is complete, then process next ride
+        setTimeout(() => {
+          this.dispatchService.processNextRideInQueue(captainId);
+        }, 500);
+      }
+
+      // Notify customer that ride is permanently cancelled
+      await this.handlePermanentRideCancellationNotification(ride);
 
       // Send confirmation to captain
       socket.emit("rideCancelledConfirmation", { 
         rideId: ride._id, 
-        message: "Ride successfully cancelled" 
+        message: "Ride permanently cancelled" 
       });
 
       // Update captain session and log
-      this.updateCaptainActivity(captainId, 'ride_cancelled', { rideId });
-      await this.logCaptainAction(captainId, rideId, 'cancelled');
+      this.updateCaptainActivity(captainId, 'ride_cancelled_permanently', { rideId });
+      await this.logCaptainAction(captainId, rideId, 'cancelled_permanently');
 
-      this.logger.info(`[Socket.IO Captain] Captain ${captainId} cancellation processed in ${Date.now() - startTime}ms`);
+      this.logger.info(`[Socket.IO Captain] Captain ${captainId} permanent cancellation processed in ${Date.now() - startTime}ms`);
+      this.logger.info(`[System] 🚫 Captain ${captainId} is now AVAILABLE for new rides immediately`);
 
     } catch (err) {
       this.logger.error(`[Socket.IO Captain] Error handling cancellation by captain ${captainId}:`, err);
@@ -1598,47 +1612,39 @@ class CaptainSocketService {
   }
 
   /**
-   * Reset ride for re-dispatch
+   * Permanently cancel ride (no re-dispatch)
    */
-  async resetRideForRedispatch(ride, captainId) {
+  async permanentlyCancelRide(ride, captainId) {
     await Ride.findByIdAndUpdate(ride._id, {
       $set: {
-        status: "requested",
+        status: "cancelled",
         driver: null,
-        isDispatching: true,
-        cancellationReason: `Cancelled by captain ${captainId} at status ${ride.status}`,
-        cancelledAt: new Date()
+        isDispatching: false, // Stop dispatching permanently
+        cancellationReason: `Permanently cancelled by captain ${captainId} at status ${ride.status}`,
+        cancelledAt: new Date(),
+        cancelledBy: captainId,
+        cancellationType: 'captain_permanent'
       }
     });
 
-    this.logger.info(`[DB] Reset ride ${ride._id} for re-dispatch after captain cancellation`);
+    this.logger.info(`[DB] PERMANENTLY cancelled ride ${ride._id} - no re-dispatch`);
   }
 
   /**
-   * Handle ride cancellation notification and restart dispatch
+   * Handle permanent ride cancellation notification (no restart dispatch)
    */
-  async handleRideCancellationNotification(ride) {
-    // Notify customer
+  async handlePermanentRideCancellationNotification(ride) {
+    // Notify customer that ride is permanently cancelled
     if (this.customerSocketService) {
       this.customerSocketService.emitToCustomer(ride.passenger, "rideCanceled", {
         rideId: ride._id,
-        message: "The captain has canceled the ride. We are searching for another captain...",
-        reason: "captain_canceled"
+        message: "The captain has cancelled the ride. Please request a new ride.",
+        reason: "captain_cancelled_permanently",
+        isPermanent: true
       });
     }
 
-    // Restart dispatch process
-    try {
-      const originCoords = {
-        latitude: ride.pickupLocation.coordinates[1],
-        longitude: ride.pickupLocation.coordinates[0],
-      };
-      
-      this.dispatchRide(ride, originCoords);
-      this.logger.info(`[Dispatch] Restarted dispatch for cancelled ride ${ride._id}`);
-    } catch (error) {
-      this.logger.error(`[Dispatch] Error restarting dispatch for cancelled ride ${ride._id}:`, error);
-    }
+    this.logger.info(`[Dispatch] Ride ${ride._id} permanently cancelled - customer notified, no re-dispatch`);
   }
 
   /**

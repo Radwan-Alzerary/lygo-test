@@ -2864,301 +2864,6 @@ class CaptainSocketService {
     };
   }
 
-  // Removed duplicate resetErrorRecovery method - using the more intelligent version above
-
-  /**
-   * Reset performance metrics
-   */
-  resetPerformanceMetrics() {
-    this.performanceMetrics.messagesSentToday = 0;
-    this.performanceMetrics.messagesReceivedToday = 0;
-    this.performanceMetrics.lastResetDate = new Date().toDateString();
-    this.performanceMetrics.peakConcurrentConnections = this.connectionMetrics.activeConnections;
-    
-    this.responseAnalytics.totalNotifications = 0;
-    this.responseAnalytics.totalAcceptances = 0;
-    this.responseAnalytics.totalRejections = 0;
-    this.responseAnalytics.timeoutCount = 0;
-    this.responseAnalytics.averageResponseTime = 0;
-    this.responseAnalytics.acceptanceRate = 0;
-    
-    this.logger.info('[CaptainSocketService] Performance metrics reset');
-  }
-
-  /**
-   * Force disconnect captain
-   */
-  forceDisconnectCaptain(captainId, reason = 'admin_action') {
-    try {
-      const socket = this.getSocketForCaptain(captainId);
-      if (socket) {
-        socket.emit('forcedDisconnection', {
-          reason: reason,
-          message: 'You have been disconnected by administrator',
-          timestamp: new Date()
-        });
-        
-        socket.disconnect(true);
-        
-        this.logger.warn(`[CaptainSocketService] Forcefully disconnected captain ${captainId}. Reason: ${reason}`);
-        return true;
-      }
-      return false;
-    } catch (error) {
-      this.logger.error(`[CaptainSocketService] Error force disconnecting captain ${captainId}:`, error);
-      return false;
-    }
-  }
-
-  /**
-   * Broadcast system message to all captains
-   */
-  broadcastSystemMessage(message, type = 'info', targetCaptains = null) {
-    try {
-      const messageData = {
-        type: type,
-        message: message,
-        timestamp: new Date(),
-        source: 'system'
-      };
-
-      let sentCount = 0;
-      const targets = targetCaptains || Object.keys(this.onlineCaptains);
-      
-      targets.forEach(captainId => {
-        if (this.emitToCaptain(captainId, 'systemMessage', messageData)) {
-          sentCount++;
-        }
-      });
-
-      this.logger.info(`[CaptainSocketService] System message broadcast to ${sentCount} captains: ${message}`);
-      return sentCount;
-    } catch (error) {
-      this.logger.error('[CaptainSocketService] Error broadcasting system message:', error);
-      return 0;
-    }
-  }
-
-  /**
-   * Get captain statistics for admin dashboard
-   */
-  getCaptainStatistics(captainId = null) {
-    if (captainId) {
-      // Individual captain stats
-      const session = this.getCaptainSessionDetails(captainId);
-      if (!session) {
-        return null;
-      }
-
-      return {
-        captain: session,
-        timestamp: new Date()
-      };
-    } else {
-      // Overall captain statistics
-      const activeSessions = Array.from(this.captainSessions.values())
-        .filter(session => session.status === 'connected');
-
-      return {
-        overview: {
-          totalCaptains: this.captainSessions.size,
-          onlineCaptains: this.connectionMetrics.activeConnections,
-          totalConnections: this.connectionMetrics.totalConnections,
-          rejectedConnections: this.connectionMetrics.rejectedConnections
-        },
-        activity: {
-          totalMessagesReceived: this.getTotalMessagesReceived(),
-          totalMessagesSent: this.performanceMetrics.messagesSentToday,
-          averageResponseTime: this.responseAnalytics.averageResponseTime,
-          acceptanceRate: this.responseAnalytics.acceptanceRate
-        },
-        performance: {
-          peakConcurrentConnections: this.performanceMetrics.peakConcurrentConnections,
-          currentMemoryUsage: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
-          errorRate: this.errorRecovery.consecutiveErrors
-        },
-        queue: this.getQueueStatistics(),
-        activeSessions: activeSessions.slice(0, 10), // Top 10 most active
-        timestamp: new Date()
-      };
-    }
-  }
-
-  // ===========================================================================================
-  // 🛠️ MAINTENANCE AND CLEANUP OPERATIONS
-  // ===========================================================================================
-
-  /**
-   * Perform maintenance cleanup
-   */
-  performMaintenance() {
-    this.logger.info('[CaptainSocketService] Starting maintenance cleanup...');
-    
-    let cleanedSessions = 0;
-    let cleanedRateLimit = 0;
-    let cleanedSuspicious = 0;
-
-    try {
-      // Clean up old disconnected sessions
-      const cutoffTime = Date.now() - (2 * 60 * 60 * 1000); // 2 hours ago
-      
-      this.captainSessions.forEach((session, captainId) => {
-        if (session.status === 'disconnected' && 
-            session.lastActivity.getTime() < cutoffTime) {
-          this.captainSessions.delete(captainId);
-          cleanedSessions++;
-        }
-      });
-
-      // Clean up old rate limiting data
-      const rateLimitCutoff = Date.now() - (60 * 60 * 1000); // 1 hour ago
-      
-      this.rateLimiting.forEach((data, socketId) => {
-        if (data.lastReset < rateLimitCutoff) {
-          this.rateLimiting.delete(socketId);
-          cleanedRateLimit++;
-        }
-      });
-
-      // Clean up old suspicious activity data
-      this.suspiciousActivity.forEach((data, captainId) => {
-        if (data.violations.length === 0 || 
-            data.violations[data.violations.length - 1].timestamp < cutoffTime) {
-          this.suspiciousActivity.delete(captainId);
-          cleanedSuspicious++;
-        }
-      });
-
-      this.logger.info(`[CaptainSocketService] Maintenance completed: ${cleanedSessions} sessions, ${cleanedRateLimit} rate limits, ${cleanedSuspicious} suspicious activity records cleaned`);
-      
-      return {
-        success: true,
-        cleaned: {
-          sessions: cleanedSessions,
-          rateLimits: cleanedRateLimit,
-          suspiciousActivity: cleanedSuspicious
-        },
-        timestamp: new Date()
-      };
-      
-    } catch (error) {
-      this.logger.error('[CaptainSocketService] Error during maintenance:', error);
-      return {
-        success: false,
-        error: error.message,
-        timestamp: new Date()
-      };
-    }
-  }
-
-  /**
-   * Emergency shutdown with graceful cleanup
-   */
-  async emergencyShutdown() {
-    this.logger.warn('[CaptainSocketService] 🚨 Emergency shutdown initiated...');
-    
-    try {
-      // Notify all connected captains
-      const shutdownMessage = {
-        type: 'emergency',
-        message: 'Service is shutting down. Please reconnect in a few minutes.',
-        timestamp: new Date()
-      };
-
-      let notifiedCount = 0;
-      Object.keys(this.onlineCaptains).forEach(captainId => {
-        if (this.emitToCaptain(captainId, 'serviceShutdown', shutdownMessage)) {
-          notifiedCount++;
-        }
-      });
-
-      this.logger.info(`[Emergency Shutdown] Notified ${notifiedCount} captains`);
-
-      // Give captains time to receive the message
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // Force disconnect all captains
-      Object.keys(this.onlineCaptains).forEach(captainId => {
-        this.forceDisconnectCaptain(captainId, 'emergency_shutdown');
-      });
-
-      // Clear all data structures
-      this.onlineCaptains = {};
-      this.captainSessions.clear();
-      this.rideSharingMap.clear();
-      this.rateLimiting.clear();
-      this.suspiciousActivity.clear();
-
-      this.logger.info('[CaptainSocketService] ✅ Emergency shutdown completed');
-      
-      return {
-        success: true,
-        notifiedCaptains: notifiedCount,
-        timestamp: new Date()
-      };
-      
-    } catch (error) {
-      this.logger.error('[CaptainSocketService] Error during emergency shutdown:', error);
-      return {
-        success: false,
-        error: error.message,
-        timestamp: new Date()
-      };
-    }
-  }
-
-  /**
-   * Graceful shutdown
-   */
-  async gracefulShutdown() {
-    this.logger.info('[CaptainSocketService] 🔄 Starting graceful shutdown...');
-    
-    try {
-      // Stop accepting new connections
-      if (this.captainNamespace) {
-        this.captainNamespace.removeAllListeners('connection');
-      }
-
-      // Notify all captains about planned shutdown
-      this.broadcastSystemMessage(
-        'Service will restart in 30 seconds. Please save your work and reconnect after restart.',
-        'warning'
-      );
-
-      // Wait 30 seconds for captains to complete current operations
-      await new Promise(resolve => setTimeout(resolve, 30000));
-
-      // Perform maintenance cleanup before shutdown
-      this.performMaintenance();
-
-      // Gracefully disconnect all captains
-      let disconnectedCount = 0;
-      Object.keys(this.onlineCaptains).forEach(captainId => {
-        const socket = this.getSocketForCaptain(captainId);
-        if (socket) {
-          socket.emit('gracefulShutdown', {
-            message: 'Service is restarting. Please reconnect in a moment.',
-            timestamp: new Date()
-          });
-          socket.disconnect(false); // Graceful disconnect
-          disconnectedCount++;
-        }
-      });
-
-      this.logger.info(`[CaptainSocketService] ✅ Graceful shutdown completed. ${disconnectedCount} captains disconnected gracefully`);
-      
-      return {
-        success: true,
-        disconnectedCaptains: disconnectedCount,
-        timestamp: new Date()
-      };
-      
-    } catch (error) {
-      this.logger.error('[CaptainSocketService] Error during graceful shutdown:', error);
-      return await this.emergencyShutdown(); // Fallback to emergency shutdown
-    }
-  }
-
   // ===========================================================================================
   // 🎯 FINAL SERVICE SUMMARY AND VALIDATION
   // ===========================================================================================
@@ -3284,30 +2989,43 @@ class CaptainSocketService {
         this.intervals.healthMonitoring = null;
       }
       
-      // Notify all connected captains
-      if (this.captainNamespace) {
-        this.captainNamespace.emit('serverShutdown', {
-          message: 'Server is shutting down. Please reconnect in a moment.',
-          timestamp: new Date()
-        });
-      }
-      
-      // Clean up sessions with timeouts
-      for (const [captainId, session] of this.captainSessions.entries()) {
-        if (session.cleanupTimeout) {
-          clearTimeout(session.cleanupTimeout);
+      // Notify all captains about planned shutdown
+      this.broadcastSystemMessage(
+        'Service will restart in 30 seconds. Please save your work and reconnect after restart.',
+        'warning'
+      );
+
+      // Wait 30 seconds for captains to complete current operations
+      await new Promise(resolve => setTimeout(resolve, 30000));
+
+      // Perform maintenance cleanup before shutdown
+      this.performMaintenance();
+
+      // Gracefully disconnect all captains
+      let disconnectedCount = 0;
+      Object.keys(this.onlineCaptains).forEach(captainId => {
+        const socket = this.getSocketForCaptain(captainId);
+        if (socket) {
+          socket.emit('gracefulShutdown', {
+            message: 'Service is restarting. Please reconnect in a moment.',
+            timestamp: new Date()
+          });
+          socket.disconnect(false); // Graceful disconnect
+          disconnectedCount++;
         }
-        this.captainSessions.delete(captainId);
-      }
+      });
+
+      this.logger.info(`[CaptainSocketService] ✅ Graceful shutdown completed. ${disconnectedCount} captains disconnected gracefully`);
       
-      // Clear rate limiting map
-      this.rateLimiting.clear();
-      this.suspiciousActivity.clear();
-      
-      this.logger.info('[CaptainSocketService] ✅ Graceful shutdown completed');
+      return {
+        success: true,
+        disconnectedCaptains: disconnectedCount,
+        timestamp: new Date()
+      };
       
     } catch (error) {
-      this.logger.error('[CaptainSocketService] ❌ Error during graceful shutdown:', error);
+      this.logger.error('[CaptainSocketService] Error during graceful shutdown:', error);
+      return await this.emergencyShutdown(); // Fallback to emergency shutdown
     }
   }
 
@@ -3431,15 +3149,29 @@ class CaptainSocketService {
             messageStatus: message.messageStatus
           };
 
-          this.io.to(customerSocketId).emit('chatMessage', messageData);
-
-          this.logger.info(`[CaptainSocket] [${debugId}] Message sent to customer socket`, {
-            captainId,
-            customerId: ride.passenger.toString(),
-            customerSocketId,
-            messageId: message._id.toString(),
-            rideId
-          });
+          // استخدام namespace الصحيح للزبائن بدل this.io.to(...) (الذي قد لا يصل للـ namespace /customer)
+          try {
+            const customerNs = (this.customerSocketService && this.customerSocketService.customerNamespace)
+              ? this.customerSocketService.customerNamespace
+              : this.io.of('/customer');
+            customerNs.to(customerSocketId).emit('chatMessage', messageData);
+            this.logger.info(`[CaptainSocket] [${debugId}] Message sent to customer socket (via /customer namespace)`, {
+              captainId,
+              customerId: ride.passenger.toString(),
+              customerSocketId,
+              messageId: message._id.toString(),
+              rideId
+            });
+          } catch (emitErr) {
+            this.logger.error(`[CaptainSocket] [${debugId}] Failed to emit chatMessage to customer namespace`, {
+              error: emitErr.message,
+              stack: emitErr.stack,
+              customerSocketId,
+              captainId,
+              rideId,
+              messageId: message._id.toString()
+            });
+          }
         } else {
           this.logger.warn(`[CaptainSocket] [${debugId}] Customer not online`, {
             captainId,

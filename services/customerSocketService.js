@@ -1032,15 +1032,27 @@ class CustomerSocketService {
             messageStatus: message.messageStatus
           };
 
-          this.io.to(driverSocketId).emit('chatMessage', messageData);
-
-          this.logger.info(`[CustomerSocket] [${debugId}] Message sent to driver socket`, {
-            customerId,
-            driverId: ride.driver.toString(),
-            driverSocketId,
-            messageId: message._id.toString(),
-            rideId
-          });
+          // استخدام namespace الصحيح للكباتن
+          try {
+            const captainNs = this.io.of('/captain');
+            captainNs.to(driverSocketId).emit('chatMessage', messageData);
+            this.logger.info(`[CustomerSocket] [${debugId}] Message sent to driver socket (via /captain namespace)`, {
+              customerId,
+              driverId: ride.driver.toString(),
+              driverSocketId,
+              messageId: message._id.toString(),
+              rideId
+            });
+          } catch (emitErr) {
+            this.logger.error(`[CustomerSocket] [${debugId}] Failed to emit chatMessage to captain namespace`, {
+              error: emitErr.message,
+              stack: emitErr.stack,
+              driverSocketId,
+              customerId,
+              rideId,
+              messageId: message._id.toString()
+            });
+          }
         } else {
           this.logger.warn(`[CustomerSocket] [${debugId}] Driver not online`, {
             customerId,

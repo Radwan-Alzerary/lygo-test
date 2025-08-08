@@ -3351,17 +3351,40 @@ class CaptainSocketService {
    * @param {Function} callback - Response callback
    */
   async handleSendChatMessage(socket, captainId, data, callback) {
+    const debugId = `captain_msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const startTime = Date.now();
+    
     try {
       const { rideId, text, tempId, isQuick = false, quickMessageType = null } = data;
 
+      this.logger.info(`[CaptainSocket] [${debugId}] Captain sending chat message`, {
+        captainId,
+        rideId,
+        textLength: text?.length || 0,
+        tempId,
+        isQuick,
+        quickMessageType,
+        socketId: socket.id,
+        timestamp: new Date().toISOString()
+      });
+
       // Validate required fields
       if (!rideId || !text) {
+        this.logger.warn(`[CaptainSocket] [${debugId}] Missing required fields`, {
+          captainId,
+          hasRideId: !!rideId,
+          hasText: !!text,
+          data
+        });
+        
         if (callback) callback({ 
           success: false, 
           message: "Missing required fields: rideId and text are required" 
         });
         return;
       }
+
+      this.logger.debug(`[CaptainSocket] [${debugId}] Calling chat service to send message`);
 
       // Send message through chat service
       const message = await this.chatService.sendMessage({
@@ -3374,14 +3397,29 @@ class CaptainSocketService {
         quickMessageType
       });
 
+      this.logger.info(`[CaptainSocket] [${debugId}] Message saved via chat service`, {
+        messageId: message._id.toString(),
+        captainId,
+        rideId,
+        processingTime: Date.now() - startTime + 'ms'
+      });
+
       // Get ride details to find customer
+      this.logger.debug(`[CaptainSocket] [${debugId}] Getting ride details to notify customer`);
       const ride = await Ride.findById(rideId).select('passenger');
       
       // Notify customer if online
       if (ride && ride.passenger) {
         const customerSocketId = this.onlineCustomers[ride.passenger.toString()];
+        
+        this.logger.debug(`[CaptainSocket] [${debugId}] Customer notification check`, {
+          customerId: ride.passenger.toString(),
+          customerSocketId,
+          isCustomerOnline: !!customerSocketId
+        });
+
         if (customerSocketId) {
-          this.io.to(customerSocketId).emit('chatMessage', {
+          const messageData = {
             messageId: message._id,
             rideId: message.rideId,
             text: message.text,
@@ -3391,32 +3429,75 @@ class CaptainSocketService {
             timestamp: message.createdAt,
             tempId: message.tempId,
             messageStatus: message.messageStatus
+          };
+
+          this.io.to(customerSocketId).emit('chatMessage', messageData);
+
+          this.logger.info(`[CaptainSocket] [${debugId}] Message sent to customer socket`, {
+            captainId,
+            customerId: ride.passenger.toString(),
+            customerSocketId,
+            messageId: message._id.toString(),
+            rideId
           });
-
-          this.logger.debug(`[Chat] Message sent from captain ${captainId} to customer ${ride.passenger} for ride ${rideId}`);
+        } else {
+          this.logger.warn(`[CaptainSocket] [${debugId}] Customer not online`, {
+            captainId,
+            customerId: ride.passenger.toString(),
+            rideId,
+            messageId: message._id.toString()
+          });
         }
-      }
-
-      // Send response back to captain
-      if (callback) {
-        callback({
-          success: true,
-          message: {
-            messageId: message._id,
-            rideId: message.rideId,
-            text: message.text,
-            senderId: message.senderId,
-            senderType: message.senderType,
-            isQuick: message.isQuick,
-            timestamp: message.createdAt,
-            tempId: message.tempId,
-            messageStatus: message.messageStatus
-          }
+      } else {
+        this.logger.error(`[CaptainSocket] [${debugId}] Ride not found or no passenger`, {
+          captainId,
+          rideId,
+          rideExists: !!ride,
+          hasPassenger: !!(ride && ride.passenger)
         });
       }
 
+      // Send response back to captain
+      const responseData = {
+        success: true,
+        message: {
+          messageId: message._id,
+          rideId: message.rideId,
+          text: message.text,
+          senderId: message.senderId,
+          senderType: message.senderType,
+          isQuick: message.isQuick,
+          timestamp: message.createdAt,
+          tempId: message.tempId,
+          messageStatus: message.messageStatus
+        }
+      };
+
+      if (callback) {
+        callback(responseData);
+      }
+
+      const totalTime = Date.now() - startTime;
+      this.logger.info(`[CaptainSocket] [${debugId}] Chat message handling completed`, {
+        captainId,
+        messageId: message._id.toString(),
+        rideId,
+        success: true,
+        totalTime: totalTime + 'ms'
+      });
+
     } catch (error) {
-      this.logger.error(`[Chat] Error sending message from captain ${captainId}:`, error);
+      const processingTime = Date.now() - startTime;
+      this.logger.error(`[CaptainSocket] [${debugId}] Error sending message from captain`, {
+        captainId,
+        error: error.message,
+        stack: error.stack,
+        processingTime: processingTime + 'ms',
+        requestData: data,
+        socketId: socket.id,
+        timestamp: new Date().toISOString()
+      });
+
       if (callback) {
         callback({
           success: false,

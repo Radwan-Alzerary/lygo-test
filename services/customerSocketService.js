@@ -952,17 +952,40 @@ class CustomerSocketService {
    * @param {Function} callback - Response callback
    */
   async handleSendChatMessage(socket, customerId, data, callback) {
+    const debugId = `customer_msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const startTime = Date.now();
+    
     try {
       const { rideId, text, tempId, isQuick = false, quickMessageType = null } = data;
 
+      this.logger.info(`[CustomerSocket] [${debugId}] Customer sending chat message`, {
+        customerId,
+        rideId,
+        textLength: text?.length || 0,
+        tempId,
+        isQuick,
+        quickMessageType,
+        socketId: socket.id,
+        timestamp: new Date().toISOString()
+      });
+
       // Validate required fields
       if (!rideId || !text) {
+        this.logger.warn(`[CustomerSocket] [${debugId}] Missing required fields`, {
+          customerId,
+          hasRideId: !!rideId,
+          hasText: !!text,
+          data
+        });
+        
         if (callback) callback({ 
           success: false, 
           message: "Missing required fields: rideId and text are required" 
         });
         return;
       }
+
+      this.logger.debug(`[CustomerSocket] [${debugId}] Calling chat service to send message`);
 
       // Send message through chat service
       const message = await this.chatService.sendMessage({
@@ -975,14 +998,29 @@ class CustomerSocketService {
         quickMessageType
       });
 
+      this.logger.info(`[CustomerSocket] [${debugId}] Message saved via chat service`, {
+        messageId: message._id.toString(),
+        customerId,
+        rideId,
+        processingTime: Date.now() - startTime + 'ms'
+      });
+
       // Get ride details to find driver
+      this.logger.debug(`[CustomerSocket] [${debugId}] Getting ride details to notify driver`);
       const ride = await Ride.findById(rideId).select('driver');
       
       // Notify driver if online
       if (ride && ride.driver) {
         const driverSocketId = this.onlineCaptains[ride.driver.toString()];
+        
+        this.logger.debug(`[CustomerSocket] [${debugId}] Driver notification check`, {
+          driverId: ride.driver.toString(),
+          driverSocketId,
+          isDriverOnline: !!driverSocketId
+        });
+
         if (driverSocketId) {
-          this.io.to(driverSocketId).emit('chatMessage', {
+          const messageData = {
             messageId: message._id,
             rideId: message.rideId,
             text: message.text,
@@ -992,32 +1030,75 @@ class CustomerSocketService {
             timestamp: message.createdAt,
             tempId: message.tempId,
             messageStatus: message.messageStatus
+          };
+
+          this.io.to(driverSocketId).emit('chatMessage', messageData);
+
+          this.logger.info(`[CustomerSocket] [${debugId}] Message sent to driver socket`, {
+            customerId,
+            driverId: ride.driver.toString(),
+            driverSocketId,
+            messageId: message._id.toString(),
+            rideId
           });
-
-          this.logger.debug(`[Chat] Message sent from customer ${customerId} to driver ${ride.driver} for ride ${rideId}`);
+        } else {
+          this.logger.warn(`[CustomerSocket] [${debugId}] Driver not online`, {
+            customerId,
+            driverId: ride.driver.toString(),
+            rideId,
+            messageId: message._id.toString()
+          });
         }
-      }
-
-      // Send response back to customer
-      if (callback) {
-        callback({
-          success: true,
-          message: {
-            messageId: message._id,
-            rideId: message.rideId,
-            text: message.text,
-            senderId: message.senderId,
-            senderType: message.senderType,
-            isQuick: message.isQuick,
-            timestamp: message.createdAt,
-            tempId: message.tempId,
-            messageStatus: message.messageStatus
-          }
+      } else {
+        this.logger.error(`[CustomerSocket] [${debugId}] Ride not found or no driver`, {
+          customerId,
+          rideId,
+          rideExists: !!ride,
+          hasDriver: !!(ride && ride.driver)
         });
       }
 
+      // Send response back to customer
+      const responseData = {
+        success: true,
+        message: {
+          messageId: message._id,
+          rideId: message.rideId,
+          text: message.text,
+          senderId: message.senderId,
+          senderType: message.senderType,
+          isQuick: message.isQuick,
+          timestamp: message.createdAt,
+          tempId: message.tempId,
+          messageStatus: message.messageStatus
+        }
+      };
+
+      if (callback) {
+        callback(responseData);
+      }
+
+      const totalTime = Date.now() - startTime;
+      this.logger.info(`[CustomerSocket] [${debugId}] Chat message handling completed`, {
+        customerId,
+        messageId: message._id.toString(),
+        rideId,
+        success: true,
+        totalTime: totalTime + 'ms'
+      });
+
     } catch (error) {
-      this.logger.error(`[Chat] Error sending message from customer ${customerId}:`, error);
+      const processingTime = Date.now() - startTime;
+      this.logger.error(`[CustomerSocket] [${debugId}] Error sending message from customer`, {
+        customerId,
+        error: error.message,
+        stack: error.stack,
+        processingTime: processingTime + 'ms',
+        requestData: data,
+        socketId: socket.id,
+        timestamp: new Date().toISOString()
+      });
+
       if (callback) {
         callback({
           success: false,

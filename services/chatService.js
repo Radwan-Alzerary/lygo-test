@@ -53,6 +53,9 @@ class ChatService {
    * @returns {Object} الرسالة المحفوظة
    */
   async sendMessage(messageData) {
+    const startTime = Date.now();
+    const debugId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
     try {
       const { 
         rideId, 
@@ -64,21 +67,62 @@ class ChatService {
         quickMessageType = null 
       } = messageData;
 
+      // تسجيل بداية معالجة الرسالة
+      this.logger.info(`[ChatService] [${debugId}] Starting message processing`, {
+        rideId,
+        senderId,
+        senderType,
+        messageLength: text?.length || 0,
+        tempId,
+        isQuick,
+        quickMessageType,
+        timestamp: new Date().toISOString()
+      });
+
       // التحقق من صحة البيانات
       if (!rideId || !senderId || !senderType || !text) {
+        this.logger.error(`[ChatService] [${debugId}] Missing required data`, {
+          hasRideId: !!rideId,
+          hasSenderId: !!senderId,
+          hasSenderType: !!senderType,
+          hasText: !!text
+        });
         throw new Error('Missing required message data');
       }
 
       // التحقق من معدل الإرسال
-      if (!this.checkRateLimit(senderId)) {
+      const rateLimitCheck = this.checkRateLimit(senderId);
+      this.logger.debug(`[ChatService] [${debugId}] Rate limit check`, {
+        senderId,
+        passed: rateLimitCheck,
+        currentRate: this.getUserMessageCount(senderId)
+      });
+
+      if (!rateLimitCheck) {
+        this.logger.warn(`[ChatService] [${debugId}] Rate limit exceeded for sender`, {
+          senderId,
+          senderType,
+          currentRate: this.getUserMessageCount(senderId)
+        });
         throw new Error('Rate limit exceeded. Please slow down.');
       }
 
       // التحقق من وجود الرحلة وحالتها
+      this.logger.debug(`[ChatService] [${debugId}] Checking ride existence`, { rideId });
       const ride = await Ride.findById(rideId);
+      
       if (!ride) {
+        this.logger.error(`[ChatService] [${debugId}] Ride not found`, { rideId });
         throw new Error('Ride not found');
       }
+
+      this.logger.debug(`[ChatService] [${debugId}] Ride found`, {
+        rideId,
+        rideStatus: ride.status,
+        passenger: ride.passenger?.toString(),
+        driver: ride.driver?.toString(),
+        createdAt: ride.createdAt
+      });
 
       // التحقق من أن المرسل جزء من الرحلة
       const isAuthorized = (
@@ -86,11 +130,37 @@ class ChatService {
         (senderType === 'driver' && ride.driver && ride.driver.toString() === senderId.toString())
       );
 
+      this.logger.debug(`[ChatService] [${debugId}] Authorization check`, {
+        senderId,
+        senderType,
+        isAuthorized,
+        ridePassenger: ride.passenger?.toString(),
+        rideDriver: ride.driver?.toString(),
+        isCustomerMatch: senderType === 'customer' && ride.passenger && ride.passenger.toString() === senderId.toString(),
+        isDriverMatch: senderType === 'driver' && ride.driver && ride.driver.toString() === senderId.toString()
+      });
+
       if (!isAuthorized) {
+        this.logger.error(`[ChatService] [${debugId}] Unauthorized message attempt`, {
+          senderId,
+          senderType,
+          rideId,
+          ridePassenger: ride.passenger?.toString(),
+          rideDriver: ride.driver?.toString()
+        });
         throw new Error('Unauthorized to send message for this ride');
       }
 
       // إنشاء الرسالة
+      this.logger.debug(`[ChatService] [${debugId}] Creating message object`, {
+        rideId,
+        senderId,
+        senderType,
+        textLength: text.trim().length,
+        tempId,
+        isQuick
+      });
+
       const message = new ChatMessage({
         rideId,
         senderId,
@@ -104,30 +174,79 @@ class ChatService {
       });
 
       // حفظ الرسالة
+      this.logger.debug(`[ChatService] [${debugId}] Saving message to database`);
       const savedMessage = await message.save();
+      
+      this.logger.info(`[ChatService] [${debugId}] Message saved successfully`, {
+        messageId: savedMessage._id.toString(),
+        rideId,
+        senderId,
+        senderType,
+        createdAt: savedMessage.createdAt,
+        processingTime: Date.now() - startTime + 'ms'
+      });
 
       // تخزين في Redis للوصول السريع
       if (this.redisClient && typeof this.redisClient.lpush === 'function') {
         try {
+          this.logger.debug(`[ChatService] [${debugId}] Caching message in Redis`);
           await this.cacheMessage(savedMessage);
+          this.logger.debug(`[ChatService] [${debugId}] Message cached successfully`);
         } catch (redisError) {
-          this.logger.warn('[ChatService] Redis caching failed, continuing without cache:', redisError.message);
+          this.logger.warn(`[ChatService] [${debugId}] Redis caching failed`, {
+            error: redisError.message,
+            messageId: savedMessage._id.toString()
+          });
         }
+      } else {
+        this.logger.debug(`[ChatService] [${debugId}] Redis client not available, skipping cache`);
       }
 
       // تحديث آخر نشاط للرحلة
+      this.logger.debug(`[ChatService] [${debugId}] Updating ride last activity`);
       await Ride.findByIdAndUpdate(rideId, {
         lastChatActivity: new Date()
       });
 
-      this.logger.info(`[ChatService] Message sent successfully: ${savedMessage._id}`);
+      const finalProcessingTime = Date.now() - startTime;
+      this.logger.info(`[ChatService] [${debugId}] Message processing completed successfully`, {
+        messageId: savedMessage._id.toString(),
+        totalTime: finalProcessingTime + 'ms',
+        rideId,
+        senderId,
+        senderType,
+        success: true
+      });
       
       return savedMessage;
 
     } catch (error) {
-      this.logger.error('[ChatService] Error sending message:', error);
+      const processingTime = Date.now() - startTime;
+      this.logger.error(`[ChatService] [${debugId}] Error sending message`, {
+        error: error.message,
+        stack: error.stack,
+        processingTime: processingTime + 'ms',
+        messageData: {
+          rideId: messageData.rideId,
+          senderId: messageData.senderId,
+          senderType: messageData.senderType,
+          textLength: messageData.text?.length || 0,
+          tempId: messageData.tempId,
+          isQuick: messageData.isQuick
+        },
+        timestamp: new Date().toISOString()
+      });
       throw error;
     }
+  }
+
+  /**
+   * Helper method to get user message count for rate limiting
+   * @private
+   */
+  getUserMessageCount(senderId) {
+    const userKey = `rate_limit_${senderId}`;
+    return this.rateLimitMap.get(userKey) || 0;
   }
 
   /**

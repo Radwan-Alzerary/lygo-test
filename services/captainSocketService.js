@@ -3431,7 +3431,8 @@ class CaptainSocketService {
             messageStatus: message.messageStatus
           };
 
-          this.io.to(customerSocketId).emit('chatMessage', messageData);
+          // إرسال الرسالة للزبون عبر الـ namespace المناسب
+          this.io.of('/customer').to(customerSocketId).emit('chatMessage', messageData);
 
           this.logger.info(`[CaptainSocket] [${debugId}] Message sent to customer socket`, {
             captainId,
@@ -3588,7 +3589,8 @@ class CaptainSocketService {
       if (ride.passenger) {
         const customerSocketId = this.onlineCustomers[ride.passenger.toString()];
         if (customerSocketId) {
-          this.io.to(customerSocketId).emit('messageRead', {
+          // إرسال تأكيد قراءة الرسائل للزبون عبر الـ namespace المناسب
+          this.io.of('/customer').to(customerSocketId).emit('messageRead', {
             rideId: rideId,
             messageIds: messageIds,
             readBy: 'driver',
@@ -3638,7 +3640,8 @@ class CaptainSocketService {
       if (ride.passenger) {
         const customerSocketId = this.onlineCustomers[ride.passenger.toString()];
         if (customerSocketId) {
-          this.io.to(customerSocketId).emit('typingIndicator', {
+          // إرسال مؤشر الكتابة للزبون عبر الـ namespace المناسب
+          this.io.of('/customer').to(customerSocketId).emit('typingIndicator', {
             rideId: rideId,
             senderType: 'driver',
             isTyping: isTyping

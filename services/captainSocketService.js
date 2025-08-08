@@ -1051,6 +1051,34 @@ class CaptainSocketService {
       this.handlePing(socket, captainId, data);
     });
 
+    // Debug event to help troubleshoot pending ride issues
+    socket.on("debugPendingRide", (callback) => {
+      try {
+        const debugInfo = this.getDebugPendingRideInfo(captainId);
+        if (callback) callback({ success: true, data: debugInfo });
+        this.logger.info(`[DEBUG] Pending ride info for captain ${captainId}:`, debugInfo);
+      } catch (error) {
+        this.logger.error(`[DEBUG] Error getting pending ride info for captain ${captainId}:`, error);
+        if (callback) callback({ success: false, error: error.message });
+      }
+    });
+
+    // Force clear pending ride (for debugging/recovery)
+    socket.on("forceClearPending", (callback) => {
+      try {
+        if (this.dispatchService) {
+          const result = this.dispatchService.clearCaptainQueue(captainId, 'manual_force_clear');
+          this.logger.info(`[DEBUG] Force cleared pending state for captain ${captainId}:`, result);
+          if (callback) callback({ success: true, data: result });
+        } else {
+          if (callback) callback({ success: false, error: 'Dispatch service not available' });
+        }
+      } catch (error) {
+        this.logger.error(`[DEBUG] Error force clearing pending for captain ${captainId}:`, error);
+        if (callback) callback({ success: false, error: error.message });
+      }
+    });
+
     // Disconnect handling
     socket.on("disconnect", (reason) => {
       this.handleDisconnect(socket, captainId, reason);
@@ -1170,6 +1198,8 @@ class CaptainSocketService {
     }
 
     this.logger.info(`[Socket.IO Captain] ✅ Captain ${captainId} accepting ride ${rideId}`);
+    this.logger.info(`[DEBUG] Acceptance data received:`, data);
+    this.logger.info(`[DEBUG] Extracted ride ID: ${rideId} (type: ${typeof rideId})`);
 
     try {
       // Update metrics
@@ -1179,6 +1209,7 @@ class CaptainSocketService {
       // Comprehensive validation
       const validationResult = await this.validateRideAcceptance(rideId, captainId);
       if (!validationResult.isValid) {
+        this.logger.warn(`[Validation Failed] Captain ${captainId} ride acceptance rejected: ${validationResult.message}`);
         this.sendError(socket, validationResult.message, rideId);
         return;
       }
@@ -1233,24 +1264,128 @@ class CaptainSocketService {
     // Check if this is captain's current pending ride (if using dispatch service)
     if (this.dispatchService) {
       const pendingRide = this.dispatchService.getCaptainPendingRide(captainId);
-      if (pendingRide && pendingRide.rideId !== rideId) {
-        return { 
-          isValid: false, 
-          message: "You can only accept your current pending ride" 
-        };
+      
+      // Add detailed logging for debugging
+      this.logger.info(`[DEBUG] Captain ${captainId} trying to accept ride ${rideId}`);
+      this.logger.info(`[DEBUG] Pending ride from dispatch service:`, pendingRide);
+      
+      if (pendingRide) {
+        this.logger.info(`[DEBUG] Pending ride ID: ${pendingRide.rideId}, Requested ride ID: ${rideId}`);
+        this.logger.info(`[DEBUG] Ride ID types - Pending: ${typeof pendingRide.rideId}, Requested: ${typeof rideId}`);
+        this.logger.info(`[DEBUG] Ride ID comparison: ${pendingRide.rideId} !== ${rideId} = ${pendingRide.rideId !== rideId}`);
+        this.logger.info(`[DEBUG] String comparison: ${pendingRide.rideId.toString()} !== ${rideId.toString()} = ${pendingRide.rideId.toString() !== rideId.toString()}`);
+        
+        // Check if pending ride is expired
+        if (pendingRide.isExpired) {
+          this.logger.warn(`[Validation] Captain ${captainId} has expired pending ride ${pendingRide.rideId}, clearing it`);
+          this.dispatchService.clearCaptainPendingRide(captainId);
+          // Continue with validation as if no pending ride exists
+        } else if (pendingRide.rideId.toString() !== rideId.toString()) {
+          this.logger.warn(`[Validation] Captain ${captainId} attempted to accept ride ${rideId} but has pending ride ${pendingRide.rideId}`);
+          
+          // Check if the requested ride actually exists and is still valid
+          const requestedRide = await this.validateRequestedRide(rideId);
+          if (!requestedRide.exists || requestedRide.status !== 'requested') {
+            this.logger.info(`[Validation] Requested ride ${rideId} is invalid, allowing captain to proceed with pending ride`);
+            return { 
+              isValid: false, 
+              message: `The ride you're trying to accept is no longer available. Please accept your current pending ride: ${pendingRide.rideId}` 
+            };
+          }
+          
+          return { 
+            isValid: false, 
+            message: `Ride mismatch detected. Your pending ride: ${pendingRide.rideId}, Requested ride: ${rideId}. Please refresh your app or use the debug feature to clear pending state.` 
+          };
+        }
       }
 
-      // Check if captain was notified
+      // Check if captain was notified (with fallback for race conditions)
       const wasNotified = this.dispatchService.wasCaptainNotified(rideId, captainId);
+      this.logger.info(`[DEBUG] Captain ${captainId} was notified for ride ${rideId}: ${wasNotified}`);
+      
       if (!wasNotified) {
-        return { 
-          isValid: false, 
-          message: "You were not notified for this ride" 
-        };
+        // Fallback: Check if ride is still available and captain is eligible
+        const rideCheck = await this.validateRequestedRide(rideId);
+        if (rideCheck.exists && rideCheck.status === 'requested') {
+          this.logger.warn(`[Validation] Captain ${captainId} not notified for ride ${rideId} but ride is valid, allowing acceptance`);
+          // Allow the acceptance to proceed - this handles race conditions
+        } else {
+          return { 
+            isValid: false, 
+            message: "You were not notified for this ride or the ride is no longer available" 
+          };
+        }
       }
     }
 
     return { isValid: true };
+  }
+
+  /**
+   * Validate if a requested ride exists and get its status
+   */
+  async validateRequestedRide(rideId) {
+    try {
+      const ride = await Ride.findById(rideId).select('status').lean();
+      return {
+        exists: !!ride,
+        status: ride?.status || null
+      };
+    } catch (error) {
+      this.logger.error(`[Validation] Error checking ride ${rideId}:`, error);
+      return {
+        exists: false,
+        status: null
+      };
+    }
+  }
+
+  /**
+   * Get debug information about captain's pending ride state
+   */
+  getDebugPendingRideInfo(captainId) {
+    const debugInfo = {
+      captainId: captainId,
+      timestamp: new Date().toISOString(),
+      dispatchServiceAvailable: !!this.dispatchService
+    };
+
+    if (this.dispatchService) {
+      try {
+        // Get pending ride from dispatch service
+        const pendingRide = this.dispatchService.getCaptainPendingRide(captainId);
+        debugInfo.pendingRide = pendingRide;
+
+        // Get captain queue status
+        const queueStatus = this.dispatchService.getCaptainQueueStatus(captainId);
+        debugInfo.queueStatus = queueStatus;
+
+        // Check if captain has any notifications
+        debugInfo.hasNotifications = false;
+        if (pendingRide) {
+          debugInfo.hasNotifications = this.dispatchService.wasCaptainNotified(pendingRide.rideId, captainId);
+        }
+
+        // Get captain session info
+        const session = this.captainSessions.get(captainId);
+        debugInfo.sessionInfo = session ? {
+          connectedAt: session.connectedAt,
+          lastActivity: session.lastActivity,
+          socketId: session.socketId,
+          status: session.status
+        } : null;
+
+        // Check if captain is in online captains
+        debugInfo.isOnline = !!this.onlineCaptains[captainId];
+        debugInfo.onlineSocketId = this.onlineCaptains[captainId];
+
+      } catch (error) {
+        debugInfo.error = error.message;
+      }
+    }
+
+    return debugInfo;
   }
 
   /**
